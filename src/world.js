@@ -1,6 +1,4 @@
 export const TILE = 16;
-export const COLS = 12;
-export const ROWS = 21;
 export const T = { GRASS: 0, TREE: 1, ROCK: 2, FIRE: 3, TORCH: 4, WATER: 5 };
 export const isSolid = t => t !== T.GRASS;
 
@@ -17,82 +15,90 @@ export function rng(seed) {
 
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
+// Floors grow: a bit wider and a lot longer each time.
+export const floorSize = floor => ({
+  cols: Math.min(36, 12 + 2 * floor),
+  rows: Math.min(64, 24 + 5 * floor),
+});
+
 // Distance (in tiles, 4-way) from (tx,ty) over non-solid tiles; -1 where unreachable.
-export function distanceField(grid, tx, ty) {
-  const d = new Int16Array(COLS * ROWS).fill(-1);
-  if (tx < 0 || ty < 0 || tx >= COLS || ty >= ROWS || isSolid(grid[ty][tx])) return d;
+export function distanceField(world, tx, ty) {
+  const { grid, cols, rows } = world;
+  const d = new Int16Array(cols * rows).fill(-1);
+  if (tx < 0 || ty < 0 || tx >= cols || ty >= rows || isSolid(grid[ty][tx])) return d;
   const q = [[tx, ty]];
-  d[ty * COLS + tx] = 0;
+  d[ty * cols + tx] = 0;
   for (let i = 0; i < q.length; i++) {
     const [x, y] = q[i];
     for (const [dx, dy] of DIRS) {
       const nx = x + dx, ny = y + dy;
-      if (nx < 0 || ny < 0 || nx >= COLS || ny >= ROWS) continue;
-      if (isSolid(grid[ny][nx]) || d[ny * COLS + nx] >= 0) continue;
-      d[ny * COLS + nx] = d[y * COLS + x] + 1;
+      if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+      if (isSolid(grid[ny][nx]) || d[ny * cols + nx] >= 0) continue;
+      d[ny * cols + nx] = d[y * cols + x] + 1;
       q.push([nx, ny]);
     }
   }
   return d;
 }
 
-export function genFloor(seed) {
+export function genFloor(seed, cols, rows) {
   for (let attempt = 0; ; attempt++) {
-    const w = tryGen(seed + attempt * 101);
-    if (w.reach.length >= 60) return w;
+    const w = tryGen(seed + attempt * 101, cols, rows);
+    if (w.reach.length >= cols * rows * 0.25) return w;
   }
 }
 
-function tryGen(seed) {
+function tryGen(seed, cols, rows) {
   const r = rng(seed);
-  const grid = Array.from({ length: ROWS }, () => Array(COLS).fill(T.GRASS));
-  const spawn = { tx: COLS >> 1, ty: ROWS - 4 };
+  const grid = Array.from({ length: rows }, () => Array(cols).fill(T.GRASS));
+  const spawn = { tx: cols >> 1, ty: rows - 4 };
   const nearSpawn = (x, y) => Math.abs(x - spawn.tx) <= 2 && Math.abs(y - spawn.ty) <= 2;
-  const inner = (x, y) => x >= 1 && y >= 1 && x < COLS - 1 && y < ROWS - 1;
+  const inner = (x, y) => x >= 1 && y >= 1 && x < cols - 1 && y < rows - 1;
+  const k = (cols * rows) / 252; // feature density scales with area
 
   // ragged forest border
-  for (let y = 0; y < ROWS; y++) {
-    for (let x = 0; x < COLS; x++) {
-      const d = Math.min(x, y, COLS - 1 - x, ROWS - 1 - y);
-      if (d === 0 || (d === 1 && r() < 0.75) || (d === 2 && r() < 0.25)) grid[y][x] = T.TREE;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const d = Math.min(x, y, cols - 1 - x, rows - 1 - y);
+      if (d === 0 || (d === 1 && r() < 0.8) || (d === 2 && r() < 0.35) || (d === 3 && r() < 0.1)) grid[y][x] = T.TREE;
     }
   }
 
   // random-walk blobs for ponds and tree groves
   const blob = (type, count, size) => {
     for (let i = 0; i < count; i++) {
-      let x = 2 + Math.floor(r() * (COLS - 4)), y = 2 + Math.floor(r() * (ROWS - 4));
-      for (let k = 0; k < size; k++) {
+      let x = 2 + Math.floor(r() * (cols - 4)), y = 2 + Math.floor(r() * (rows - 4));
+      for (let n = 0; n < size; n++) {
         if (inner(x, y) && !nearSpawn(x, y)) grid[y][x] = type;
         const [dx, dy] = DIRS[Math.floor(r() * 4)];
         x += dx; y += dy;
       }
     }
   };
-  blob(T.WATER, Math.floor(r() * 3), 8);
-  blob(T.TREE, 2 + Math.floor(r() * 3), 10);
+  blob(T.WATER, Math.round(k * (0.6 + r() * 1.4)), 10);
+  blob(T.TREE, Math.round(k * (2.5 + r() * 2)), 14);
 
   const scatter = (type, count) => {
     for (let i = 0; i < count; i++) {
-      const x = 2 + Math.floor(r() * (COLS - 4)), y = 2 + Math.floor(r() * (ROWS - 4));
+      const x = 2 + Math.floor(r() * (cols - 4)), y = 2 + Math.floor(r() * (rows - 4));
       if (grid[y][x] === T.GRASS && !nearSpawn(x, y)) grid[y][x] = type;
     }
   };
-  scatter(T.ROCK, 4 + Math.floor(r() * 4));
-  scatter(T.FIRE, 1 + Math.floor(r() * 3));
-  scatter(T.TORCH, 2);
+  scatter(T.ROCK, Math.round(k * (4 + r() * 4)));
+  scatter(T.FIRE, Math.round(k * (1 + r() * 2)));
+  scatter(T.TORCH, Math.round(k * 2));
 
   // anything the player can't reach becomes forest so nothing is sealed off
-  const field = distanceField(grid, spawn.tx, spawn.ty);
+  const field = distanceField({ grid, cols, rows }, spawn.tx, spawn.ty);
   const reach = [];
-  for (let y = 0; y < ROWS; y++) {
-    for (let x = 0; x < COLS; x++) {
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
       if (grid[y][x] !== T.GRASS) continue;
-      if (field[y * COLS + x] < 0) grid[y][x] = T.TREE;
-      else reach.push({ tx: x, ty: y, dist: field[y * COLS + x] });
+      if (field[y * cols + x] < 0) grid[y][x] = T.TREE;
+      else reach.push({ tx: x, ty: y, dist: field[y * cols + x] });
     }
   }
 
-  const variant = Array.from({ length: ROWS }, () => Array.from({ length: COLS }, () => Math.floor(r() * 3)));
-  return { grid, spawn, reach, variant, seed };
+  const variant = Array.from({ length: rows }, () => Array.from({ length: cols }, () => Math.floor(r() * 4)));
+  return { grid, cols, rows, spawn, reach, variant, seed };
 }
