@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Slasher sprites</title>
+<style>
+  body { background: #6b9a3b; margin: 16px; font: 12px monospace; color: #fff; }
+  .row { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; }
+  figure { margin: 0; text-align: center; }
+  canvas { image-rendering: pixelated; display: block; }
+</style>
+</head>
+<body>
+<div class="row" id="row"></div>
+<script type="module">
+  import { buildSprites, orbSprite } from './src/sprites.js';
+  const S = buildSprites();
+  const items = {
+    hero: S.hero, chomper: S.chomper, bulb: S.bulb, brute: S.brute,
+    tree: S.tree[0], tree2: S.tree[1], rock: S.rock, fireA: S.fire[0], fireB: S.fire[1], torch: S.torch,
+    grass: S.grass[0], water: S.water[0],
+    orb: orbSprite({ m: '#e5484d', M: '#8f1d2c', W: '#ffd0d0' }),
+  };
+  const row = document.getElementById('row');
+  for (const [name, c] of Object.entries(items)) {
+    const f = document.createElement('figure');
+    c.style.width = c.width * 10 + 'px';
+    f.append(c, name);
+    row.append(f);
+  }
+</script>
+</body>
+</html>
