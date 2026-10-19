@@ -1,24 +1,24 @@
 import { buildSprites, orbSprite } from './sprites.js';
-import { TILE, T, isSolid, genFloor, floorSize, distanceField, rng } from './world.js';
+import { TILE, T, isSolid, genFloor, floorSize, distanceField } from './world.js';
+import { Renderer } from './render.js';
 
-// The screen shows a fixed 12x21-tile window; the world is bigger and the camera scrolls.
-const W = 12 * TILE, H = 21 * TILE;
-const cv = document.getElementById('c');
-const ctx = cv.getContext('2d');
+// Game logic runs in "pixels" (16 per tile); src/render.js draws it as a 3D world with
+// sprite characters, and the HUD is a 2D canvas laid over the top.
+const glCanvas = document.getElementById('gl');
+const hud = document.getElementById('hud');
+const hctx = hud.getContext('2d');
 const SPR = buildSprites();
+const renderer = new Renderer(glCanvas, SPR);
 
-let scale = 1, offX = 0, offY = 0;
+let VW = innerWidth, VH = innerHeight;
 function resize() {
   const dpr = window.devicePixelRatio || 1;
-  cv.width = Math.round(innerWidth * dpr);
-  cv.height = Math.round(innerHeight * dpr);
-  const fit = Math.min(cv.width / W, cv.height / H);
-  scale = fit >= 1 ? Math.floor(fit) : fit; // integer scale keeps pixels crisp
-  offX = Math.round((cv.width - W * scale) / 2);
-  offY = Math.round((cv.height - H * scale) / 2);
+  VW = innerWidth; VH = innerHeight;
+  hud.width = Math.round(VW * dpr); hud.height = Math.round(VH * dpr);
+  hctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  renderer.resize(VW, VH, dpr);
 }
 addEventListener('resize', resize);
-resize();
 
 // Upgrade orbs: dropped by monsters, picked up by walking over them.
 const ORBS = [
@@ -37,11 +37,11 @@ const ENEMY_TYPES = {
 };
 const AGGRO = 90;
 
-let seed, floor, world, staticLayer, lights, field, fieldT;
+let seed, floor, world, field, fieldT;
 let player, enemies, particles, orbs, texts, portal, state, shake, time, banner, fade, msg;
 const cam = { x: 0, y: 0 };
 const stick = { active: false, id: null, ox: 0, oy: 0, dx: 0, dy: 0 };
-const STICK_R = 22;
+const STICK_R = 48; // CSS pixels
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -57,7 +57,7 @@ function nextFloor() {
   floor++;
   const { cols, rows } = floorSize(floor);
   world = genFloor(seed + floor * 7919, cols, rows);
-  buildStatic();
+  renderer.buildWorld(world);
   player.x = world.spawn.tx * TILE + TILE / 2;
   player.y = world.spawn.ty * TILE + TILE / 2;
   player.hp = Math.min(player.maxHp, player.hp + player.maxHp * 0.2);
@@ -72,103 +72,17 @@ function nextFloor() {
   field = distanceField(world, world.spawn.tx, world.spawn.ty);
   fieldT = 0.2;
   state = 'play';
-  cam.x = clamp(player.x - W / 2, 0, world.cols * TILE - W);
-  cam.y = clamp(player.y - H / 2, 0, world.rows * TILE - H);
+  const f = camTarget(); cam.x = f.x; cam.y = f.y;
 }
 
-function buildStatic() {
-  const { cols, rows, grid, variant } = world;
-  const w = cols * TILE, h = rows * TILE;
-  const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  const g = c.getContext('2d');
-  g.imageSmoothingEnabled = false;
-  const r = rng(world.seed);
-  const isWater = (x, y) => x >= 0 && y >= 0 && x < cols && y < rows && grid[y][x] === T.WATER;
-
-  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) g.drawImage(SPR.grass[variant[y][x]], x * TILE, y * TILE);
-
-  // Per-pixel pass: smooth value noise thresholded into crisp patches of darker and
-  // lighter grass, and ponds painted in flat bands (foam, shallow, mid, deep).
-  const img = g.getImageData(0, 0, w, h), d = img.data;
-  const cell = 9, nx = Math.ceil(w / cell) + 2, ny = Math.ceil(h / cell) + 2;
-  const noise = Float32Array.from({ length: nx * ny }, () => r());
-  const smooth = a => a * a * (3 - 2 * a);
-  const n = (px, py) => {
-    const fx = px / cell, fy = py / cell, ix = Math.floor(fx), iy = Math.floor(fy);
-    const u = smooth(fx - ix), v = smooth(fy - iy);
-    const A = noise[iy * nx + ix], B = noise[iy * nx + ix + 1], C = noise[(iy + 1) * nx + ix], D = noise[(iy + 1) * nx + ix + 1];
-    return (A * (1 - u) + B * u) * (1 - v) + (C * (1 - u) + D * u) * v;
+// camera focus: a little ahead of the hero, kept inside the map
+const fit = (v, lo, hi) => lo > hi ? (lo + hi) / 2 : clamp(v, lo, hi);
+function camTarget() {
+  return {
+    x: fit(player.x, 5.5 * TILE, world.cols * TILE - 5.5 * TILE),
+    y: fit(player.y - 20, 6 * TILE, world.rows * TILE - 6 * TILE),
   };
-  const WATER = [[0xd7, 0xed, 0xe6], [0x9f, 0xd0, 0xd0], [0x63, 0xb4, 0xb6], [0x3f, 0x9a, 0xa3]];
-  for (let py = 0; py < h; py++) {
-    for (let px = 0; px < w; px++) {
-      const i = (py * w + px) * 4;
-      const tx = (px / TILE) | 0, ty = (py / TILE) | 0;
-      const nn = n(px, py);
-      if (grid[ty][tx] !== T.WATER) {
-        if (nn > 0.62) { d[i] *= 0.9; d[i + 1] *= 0.93; d[i + 2] *= 0.88; }
-        else if (nn < 0.2) { d[i] = Math.min(255, d[i] + 9); d[i + 1] = Math.min(255, d[i + 1] + 12); d[i + 2] = Math.min(255, d[i + 2] + 5); }
-        continue;
-      }
-      // distance in pixels to the nearest land tile (looking one tile around)
-      let dist = 99;
-      for (let oy = -1; oy <= 1; oy++) {
-        for (let ox = -1; ox <= 1; ox++) {
-          if (isWater(tx + ox, ty + oy)) continue;
-          const rx0 = (tx + ox) * TILE, ry0 = (ty + oy) * TILE;
-          const ddx = Math.max(rx0 - px, 0, px - (rx0 + TILE - 1)), ddy = Math.max(ry0 - py, 0, py - (ry0 + TILE - 1));
-          dist = Math.min(dist, Math.hypot(ddx, ddy));
-        }
-      }
-      const t = dist + (nn - 0.5) * 10;
-      let col = t < 2 ? WATER[0] : t < 7 ? WATER[1] : t < 14 ? WATER[2] : WATER[3];
-      if (col !== WATER[0] && ((px * 7 + py * 13) % 61 === 0)) col = WATER[0];
-      d[i] = col[0]; d[i + 1] = col[1]; d[i + 2] = col[2];
-    }
-  }
-  g.putImageData(img, 0, 0);
-
-  // brown cliff ledges where grass drops into water (top and sides), like the reference
-  const ledge = (x0, y0, ww, hh, vertical) => {
-    g.fillStyle = '#b9c7a6'; g.fillRect(x0, y0, vertical ? 1 : ww, vertical ? hh : 1);
-    g.fillStyle = '#8a5a48'; g.fillRect(vertical ? x0 + 1 : x0, vertical ? y0 : y0 + 1, vertical ? 3 : ww, vertical ? hh : 4);
-    g.fillStyle = '#6a4034';
-    for (let k = 1; k < (vertical ? hh : ww); k += 3 + ((r() * 3) | 0)) {
-      if (vertical) g.fillRect(x0 + 1, y0 + k, 3, 1); else g.fillRect(x0 + k, y0 + 1, 1, 4);
-    }
-  };
-  for (let y = 0; y < rows; y++) {
-    for (let x = 0; x < cols; x++) {
-      if (grid[y][x] !== T.WATER) continue;
-      if (!isWater(x, y - 1)) ledge(x * TILE, y * TILE, TILE, 5, false);
-      if (!isWater(x - 1, y)) ledge(x * TILE, y * TILE, 4, TILE, true);
-      if (!isWater(x + 1, y)) { g.save(); g.translate((x + 1) * TILE, y * TILE); g.scale(-1, 1); ledge(0, 0, 4, TILE, true); g.restore(); }
-    }
-  }
-
-  // contact shadows under trees and rocks
-  g.fillStyle = 'rgba(30,50,30,0.35)';
-  for (let y = 0; y < rows; y++) {
-    for (let x = 0; x < cols; x++) {
-      const t = grid[y][x];
-      if (t === T.TREE || t === T.ROCK) { g.beginPath(); g.ellipse(x * TILE + 8 + (t === T.TREE ? treeShift(y) : 0), y * TILE + 14, 8, 3, 0, 0, Math.PI * 2); g.fill(); }
-    }
-  }
-  // trees and rocks row by row so lower ones overlap upper ones; odd rows are staggered
-  // so forests pack together like the reference
-  for (let y = 0; y < rows; y++) {
-    for (let x = 0; x < cols; x++) {
-      const t = grid[y][x];
-      if (t === T.TREE) g.drawImage(SPR.tree[(x * 31 + y * 17) % 23 === 0 ? 2 : (x * 7 + y * 3) % 2], x * TILE + treeShift(y), y * TILE - 4);
-      else if (t === T.ROCK) g.drawImage(SPR.rock, x * TILE, y * TILE);
-    }
-  }
-  staticLayer = c;
-  lights = [];
-  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) if (grid[y][x] === T.FIRE || grid[y][x] === T.TORCH) lights.push({ x, y, t: grid[y][x] });
 }
-const treeShift = y => (y & 1) ? 4 : -4;
 
 // ---- collision ----
 function solidAt(x, y) {
@@ -213,10 +127,12 @@ function populate() {
   }
 }
 
-function burst(x, y, color, n) {
+const rgb = c => [parseInt(c.slice(1, 3), 16) / 255, parseInt(c.slice(3, 5), 16) / 255, parseInt(c.slice(5, 7), 16) / 255];
+function burst(x, y, color, n, h = 6) {
+  const c = rgb(color);
   for (let i = 0; i < n; i++) {
     const a = Math.random() * Math.PI * 2, s = 20 + Math.random() * 45;
-    particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.3 + Math.random() * 0.25, color });
+    particles.push({ x, y, h, vx: Math.cos(a) * s, vy: Math.sin(a) * s, vh: 20 + Math.random() * 50, life: 0.3 + Math.random() * 0.25, rgb: c });
   }
 }
 
@@ -254,13 +170,10 @@ function swingHit(s) {
   shake = Math.max(shake, 1);
 }
 
-const ease = p => 1 - (1 - p) * (1 - p);
-const swingAngles = s => [s.a - s.dir * (player.arc / 2 + 0.5), s.a + s.dir * (player.arc / 2)];
-
 function dropOrb(x, y) {
   orbs.push({ x, y, kind: ORBS[Math.floor(Math.random() * ORBS.length)], t: Math.random() * 6 });
 }
-function say(text, x, y) { texts.push({ text, x, y, life: 1.1 }); }
+function say(text, x, y) { texts.push({ text, x, y, rise: 0, life: 1.4 }); }
 
 // ---- update ----
 function update(dt) {
@@ -356,7 +269,7 @@ function update(dt) {
     if (d < 40) { o.x += (dx / d) * 70 * dt; o.y += (dy / d) * 70 * dt; }
     if (d < 8) {
       o.kind.apply(player);
-      say(o.kind.name + ' ' + o.kind.text, player.x, player.y - 14);
+      say(o.kind.name + ' ' + o.kind.text, player.x, player.y);
       burst(o.x, o.y, o.kind.colors.m, 10);
       orbs.splice(i, 1);
     }
@@ -368,189 +281,63 @@ function update(dt) {
   }
   if (portal.open && Math.hypot(player.x - portal.x, player.y - portal.y) < 9) nextFloor();
 
-  for (const p of particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+  for (const p of particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.h = Math.max(0, p.h + p.vh * dt); p.vh -= 160 * dt; p.life -= dt; }
   particles = particles.filter(p => p.life > 0);
-  for (const t of texts) { t.y -= 8 * dt; t.life -= dt; }
+  for (const t of texts) { t.rise += 14 * dt; t.life -= dt; }
   texts = texts.filter(t => t.life > 0);
   shake = Math.max(0, shake - dt * 12);
 
-  // camera follows the hero, clamped to the world
-  const tx = clamp(player.x - W / 2, 0, world.cols * TILE - W);
-  const ty = clamp(player.y - H / 2, 0, world.rows * TILE - H);
-  const k = 1 - Math.exp(-dt * 9);
-  cam.x += (tx - cam.x) * k;
-  cam.y += (ty - cam.y) * k;
+  const ct = camTarget();
+  const k = 1 - Math.exp(-dt * 7);
+  cam.x += (ct.x - cam.x) * k;
+  cam.y += (ct.y - cam.y) * k;
 }
 
-// ---- draw ----
-function shadow(x, y, rx) {
-  ctx.fillStyle = 'rgba(20,30,10,0.35)';
-  ctx.beginPath(); ctx.ellipse(x, y, rx, rx * 0.45, 0, 0, Math.PI * 2); ctx.fill();
+// ---- HUD (2D overlay) ----
+const ease = p => 1 - (1 - p) * (1 - p);
+const swingAngles = s => [s.a - s.dir * (player.arc / 2 + 0.5), s.a + s.dir * (player.arc / 2)];
+
+function label(text, x, y, size, color = '#fff', align = 'center') {
+  hctx.font = `bold ${size}px ui-monospace, Menlo, Consolas, monospace`;
+  hctx.textAlign = align;
+  hctx.fillStyle = '#12101a'; hctx.fillText(text, x + 1, y + 1);
+  hctx.fillStyle = color; hctx.fillText(text, x, y);
 }
 
-function drawSword(px, py, ang) {
-  const k = player.range / 24;
-  ctx.save();
-  ctx.translate(px, py);
-  ctx.rotate(ang + Math.PI / 2);
-  ctx.drawImage(SPR.sword, -2.5 * k, -16.5 * k, 5 * k, 19 * k);
-  ctx.restore();
+function arrowTo(wx, wy, color) {
+  const p = renderer.project(wx, wy, 8);
+  const m = 26;
+  if (!p.behind && p.x > m && p.x < VW - m && p.y > m + 30 && p.y < VH - m) return;
+  const cx = VW / 2, cy = VH / 2;
+  let dx = p.x - cx, dy = p.y - cy;
+  if (p.behind) { dx = -dx; dy = -dy; }
+  const k = Math.min((VW / 2 - m) / (Math.abs(dx) || 1e-6), (VH / 2 - m - 20) / (Math.abs(dy) || 1e-6));
+  hctx.save();
+  hctx.translate(cx + dx * k, cy + dy * k);
+  hctx.rotate(Math.atan2(dy, dx));
+  hctx.fillStyle = color; hctx.strokeStyle = '#12101a'; hctx.lineWidth = 2;
+  hctx.beginPath(); hctx.moveTo(14, 0); hctx.lineTo(-10, -11); hctx.lineTo(-10, 11); hctx.closePath(); hctx.fill(); hctx.stroke();
+  hctx.restore();
 }
 
-// Which of the three drawn views to use for a facing angle (side is mirrored for left).
-function heroView(a) {
-  const c = Math.cos(a), sn = Math.sin(a);
-  if (Math.abs(c) > Math.abs(sn)) return { v: 'side', f: c >= 0 ? 1 : -1 };
-  return { v: sn >= 0 ? 'down' : 'up', f: c >= 0 ? 1 : -1 };
-}
+function drawHud() {
+  hctx.clearRect(0, 0, VW, VH);
+  const u = Math.max(1, Math.min(VW / 390, VH / 844) * 1.0);
 
-function drawHero() {
-  const s = player.swing;
-  const { v, f } = heroView(s ? s.a : player.aim);
-  const q = s ? s.t / s.dur : 0;
-  const lunge = s ? Math.sin(Math.min(q, 1) * Math.PI) * 2.5 : 0;
-  const hx = player.x + (s ? Math.cos(s.a) * lunge : 0);
-  const hy = player.y + (s ? Math.sin(s.a) * lunge : 0);
-  const bob = player.walk ? Math.abs(Math.sin(player.walk)) * 1.5 : 0;
-  const frame = player.walk ? (Math.floor(player.walk / 2.2) % 2 ? 'walkA' : 'walkB') : 'idle';
-  const sway = Math.sin(time * 3) * 0.04;
-
-  // sword: carried on the back (or ready at the side), or mid-swing
-  let ang, px, py, behind;
-  if (s) {
-    const [a0, a1] = swingAngles(s);
-    ang = a0 + (a1 - a0) * ease(Math.min(q, 1));
-    px = hx + Math.cos(s.a) * 3; py = hy - 3 + Math.sin(s.a) * 2;
-    behind = Math.sin(ang) < 0;
-  } else if (v === 'down') { ang = -1.15 + sway; px = hx + 4; py = hy - 3 - bob; behind = true; }
-  else if (v === 'up') { ang = -1.95 + sway; px = hx - 2; py = hy - 4 - bob; behind = false; }
-  else { ang = (f > 0 ? -2.2 : -0.94) + sway; px = hx - f * 2; py = hy - 3 - bob; behind = true; }
-
-  // round shield on the off-hand arm (hidden behind the body in side view)
-  const sh = v === 'down' ? { x: hx + 7, y: hy - 1, front: true }
-    : v === 'up' ? { x: hx - 7, y: hy - 1, front: false }
-    : { x: hx - f * 5, y: hy - 1, front: false };
-  const drawShield = () => ctx.drawImage(SPR.shield, Math.round(sh.x - 4), Math.round(sh.y - 4 - bob));
-
-  shadow(player.x, player.y + 6, 5);
-  if (!sh.front) drawShield();
-  if (behind) drawSword(px, py, ang);
-  ctx.save();
-  if (player.hurt > 0 && Math.floor(time * 20) % 2) ctx.filter = 'brightness(3)';
-  ctx.translate(Math.round(hx), Math.round(hy - 13 - bob));
-  if (v === 'side' && f < 0) ctx.scale(-1, 1);
-  ctx.drawImage(SPR.hero[v][frame], -8, 0);
-  ctx.restore();
-  if (sh.front) drawShield();
-  if (!behind) drawSword(px, py, ang);
-
-  if (s) {
-    // glowing crescent that chases the blade
-    const [a0, a1] = swingAngles(s);
-    const head = ease(Math.min(q, 1)), tail = ease(clamp(q - 0.55, 0, 1));
-    if (head > tail) {
-      const R = player.range * 0.92;
-      ctx.lineCap = 'butt';
-      ctx.strokeStyle = 'rgba(170,220,255,0.4)'; ctx.lineWidth = 5;
-      ctx.beginPath(); ctx.arc(px, py, R, a0 + (a1 - a0) * tail, a0 + (a1 - a0) * head, s.dir < 0); ctx.stroke();
-      ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(px, py, R + 1, a0 + (a1 - a0) * tail, a0 + (a1 - a0) * head, s.dir < 0); ctx.stroke();
-    }
+  // enemy health bars
+  for (const e of enemies) {
+    if (e.hp >= e.maxHp) continue;
+    const p = renderer.project(e.x, e.y, e.type.size + 4);
+    const w = 28 * u;
+    hctx.fillStyle = '#000'; hctx.fillRect(p.x - w / 2 - 1, p.y - 1, w + 2, 6 * u);
+    hctx.fillStyle = '#4ade80'; hctx.fillRect(p.x - w / 2, p.y, Math.max(0, w * e.hp / e.maxHp), 4 * u);
   }
-}
-
-function arrowTo(tx, ty, color) {
-  const sx = tx - cam.x, sy = ty - cam.y;
-  if (sx > 8 && sx < W - 8 && sy > 8 && sy < H - 8) return;
-  const dx = sx - W / 2, dy = sy - H / 2;
-  const k = Math.min((W / 2 - 12) / (Math.abs(dx) || 1e-6), (H / 2 - 12) / (Math.abs(dy) || 1e-6));
-  ctx.save();
-  ctx.translate(W / 2 + dx * k, H / 2 + dy * k);
-  ctx.rotate(Math.atan2(dy, dx));
-  ctx.fillStyle = color; ctx.strokeStyle = '#2a1f33'; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(5, 0); ctx.lineTo(-4, -4); ctx.lineTo(-4, 4); ctx.closePath(); ctx.fill(); ctx.stroke();
-  ctx.restore();
-}
-
-function draw() {
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = '#0b0b12';
-  ctx.fillRect(0, 0, cv.width, cv.height);
-  ctx.setTransform(scale, 0, 0, scale, offX, offY);
-  ctx.imageSmoothingEnabled = false;
-  ctx.save();
-  ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
-
-  // ---- world (camera space) ----
-  const cx = Math.round(cam.x), cy = Math.round(cam.y);
-  const sx = shake ? Math.round((Math.random() - 0.5) * shake) : 0, sy = shake ? Math.round((Math.random() - 0.5) * shake) : 0;
-  ctx.save();
-  ctx.translate(-cx + sx, -cy + sy);
-  ctx.drawImage(staticLayer, cx, cy, W, H, cx, cy, W, H);
-
-  const fi = Math.floor(time * 6) % 2;
-  for (const l of lights) {
-    const x = l.x * TILE, y = l.y * TILE;
-    if (x < cx - 30 || x > cx + W + 30 || y < cy - 30 || y > cy + H + 30) continue;
-    ctx.fillStyle = `rgba(255,190,80,${0.12 + 0.04 * fi})`;
-    ctx.beginPath(); ctx.arc(x + 8, y + 6, 22, 0, Math.PI * 2); ctx.fill();
-    ctx.drawImage(l.t === T.FIRE ? SPR.fire[fi] : SPR.torch, x, y);
-  }
-
-  // portal: dull and sealed until the floor is cleared
-  for (let py = -8; py < 8; py++) {
-    for (let px = -8; px < 8; px++) {
-      const d = Math.hypot(px + 0.5, (py + 0.5) * 1.15);
-      if (d > 7.5) continue;
-      const band = Math.floor(d - time * 6 + 40) % 3;
-      ctx.fillStyle = d > 6.5 ? '#2a1f33'
-        : portal.open ? (band === 0 ? '#ffffff' : band === 1 ? '#5cd6e6' : '#8a4fd0')
-        : (band === 0 ? '#555a68' : '#3d4150');
-      ctx.fillRect(portal.x + px, portal.y + py, 1, 1);
-    }
-  }
-
-  const list = [];
-  for (const o of orbs) list.push({ y: o.y, fn: () => {
-    const bob = Math.sin(o.t * 4) * 1.5;
-    shadow(o.x, o.y + 3, 3);
-    ctx.drawImage(o.kind.sprite, Math.round(o.x - 4), Math.round(o.y - 5 + bob));
-  } });
-  for (const e of enemies) list.push({ y: e.y, fn: () => {
-    const s = e.type.size, bob = Math.abs(Math.sin(e.phase)) * 1.5;
-    shadow(e.x, e.y + 5, s / 3);
-    ctx.save();
-    if (e.flash > 0) ctx.filter = 'brightness(3)';
-    ctx.drawImage(SPR[e.type.sprite], Math.round(e.x - s / 2), Math.round(e.y - s / 2 - bob - (s - 16) / 2), s, s);
-    ctx.restore();
-    if (e.hp < e.maxHp) {
-      ctx.fillStyle = '#000'; ctx.fillRect(Math.round(e.x - 6), Math.round(e.y - s / 2 - 4), 12, 2);
-      ctx.fillStyle = '#4ade80'; ctx.fillRect(Math.round(e.x - 6), Math.round(e.y - s / 2 - 4), Math.max(0, Math.round(12 * e.hp / e.maxHp)), 2);
-    }
-  } });
-  list.push({ y: player.y, fn: drawHero });
-  list.sort((a, b) => a.y - b.y).forEach(i => i.fn());
-
-  for (const p of particles) {
-    ctx.globalAlpha = clamp(p.life * 3, 0, 1);
-    ctx.fillStyle = p.color;
-    ctx.fillRect(Math.round(p.x), Math.round(p.y), 1, 1);
-  }
-  ctx.globalAlpha = 1;
-
-  ctx.font = 'bold 7px monospace'; ctx.textAlign = 'center';
   for (const t of texts) {
-    ctx.globalAlpha = Math.min(1, t.life * 2);
-    ctx.fillStyle = '#2a1f33'; ctx.fillText(t.text, t.x + 0.5, t.y + 0.5);
-    ctx.fillStyle = '#fff'; ctx.fillText(t.text, t.x, t.y);
+    const p = renderer.project(t.x, t.y, 26 + t.rise);
+    hctx.globalAlpha = Math.min(1, t.life * 2);
+    label(t.text, p.x, p.y, 13 * u);
   }
-  ctx.globalAlpha = 1;
-  ctx.restore();
-
-  // ---- screen space ----
-  const vg = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.72);
-  vg.addColorStop(0, 'rgba(10,20,5,0)'); vg.addColorStop(1, 'rgba(10,20,5,0.4)');
-  ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+  hctx.globalAlpha = 1;
 
   if (enemies.length) {
     let best = null, bd = 1e9;
@@ -559,67 +346,54 @@ function draw() {
   } else arrowTo(portal.x, portal.y, '#5cd6e6');
 
   if (stick.active && stick.ox > -900) {
-    ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.arc(stick.ox, stick.oy, STICK_R, 0, Math.PI * 2); ctx.stroke();
+    hctx.strokeStyle = 'rgba(255,255,255,0.35)'; hctx.lineWidth = 2;
+    hctx.beginPath(); hctx.arc(stick.ox, stick.oy, STICK_R, 0, Math.PI * 2); hctx.stroke();
     const l = Math.min(Math.hypot(stick.dx, stick.dy), STICK_R), a = Math.atan2(stick.dy, stick.dx);
-    ctx.fillStyle = 'rgba(255,255,255,0.4)';
-    ctx.beginPath(); ctx.arc(stick.ox + Math.cos(a) * l, stick.oy + Math.sin(a) * l, 7, 0, Math.PI * 2); ctx.fill();
+    hctx.fillStyle = 'rgba(255,255,255,0.45)';
+    hctx.beginPath(); hctx.arc(stick.ox + Math.cos(a) * l, stick.oy + Math.sin(a) * l, 18, 0, Math.PI * 2); hctx.fill();
   }
 
-  ctx.font = 'bold 7px monospace';
-  ctx.fillStyle = '#2a1f33'; ctx.fillRect(5, 5, 52, 8);
-  ctx.fillStyle = '#4a1a24'; ctx.fillRect(6, 6, 50, 6);
-  ctx.fillStyle = '#e5484d'; ctx.fillRect(6, 6, Math.max(0, Math.round(50 * player.hp / player.maxHp)), 6);
-  ctx.fillStyle = '#fff'; ctx.textAlign = 'right';
-  ctx.fillText('Floor ' + floor, W - 6, 12);
-  ctx.textAlign = 'left';
-  ctx.fillText(portal.open ? 'Portal open' : 'Foes ' + enemies.length, 6, 22);
+  // bars and labels
+  const top = 12 * u + (window.visualViewport ? 0 : 0);
+  hctx.fillStyle = '#12101a'; hctx.fillRect(12, top, 128 * u, 16 * u);
+  hctx.fillStyle = '#4a1a24'; hctx.fillRect(14, top + 2, 124 * u, 12 * u);
+  hctx.fillStyle = '#e5484d'; hctx.fillRect(14, top + 2, Math.max(0, 124 * u * player.hp / player.maxHp), 12 * u);
+  label('Floor ' + floor, VW - 12, top + 14 * u, 15 * u, '#fff', 'right');
+  label(portal.open ? 'Portal open' : 'Foes ' + enemies.length, 12, top + 38 * u, 13 * u, '#fff', 'left');
 
-  if (msg.t > 0) {
-    ctx.globalAlpha = Math.min(1, msg.t); ctx.textAlign = 'center';
-    ctx.fillStyle = '#2a1f33'; ctx.fillText(msg.text, W / 2 + 0.5, 40.5);
-    ctx.fillStyle = '#fff'; ctx.fillText(msg.text, W / 2, 40);
-    ctx.globalAlpha = 1;
-  }
-  if (banner > 0) {
-    ctx.globalAlpha = Math.min(1, banner);
-    ctx.font = 'bold 14px monospace'; ctx.textAlign = 'center';
-    ctx.fillStyle = '#2a1f33'; ctx.fillText('FLOOR ' + floor, W / 2 + 1, 81);
-    ctx.fillStyle = '#fff'; ctx.fillText('FLOOR ' + floor, W / 2, 80);
-    ctx.globalAlpha = 1;
-  }
-  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
-
+  if (msg.t > 0) { hctx.globalAlpha = Math.min(1, msg.t); label(msg.text, VW / 2, VH * 0.2, 15 * u); hctx.globalAlpha = 1; }
+  if (banner > 0) { hctx.globalAlpha = Math.min(1, banner); label('FLOOR ' + floor, VW / 2, VH * 0.3, 34 * u); hctx.globalAlpha = 1; }
+  if (fade > 0) { hctx.fillStyle = `rgba(0,0,0,${fade})`; hctx.fillRect(0, 0, VW, VH); }
   if (state === 'dead') {
-    ctx.fillStyle = 'rgba(0,0,0,0.78)'; ctx.fillRect(0, 0, W, H);
-    ctx.textAlign = 'center'; ctx.fillStyle = '#fff';
-    ctx.font = 'bold 16px monospace'; ctx.fillText('YOU DIED', W / 2, 140);
-    ctx.font = 'bold 9px monospace'; ctx.fillText('Reached floor ' + floor, W / 2, 160);
-    ctx.fillStyle = '#7cc460'; ctx.fillText('Tap to retry', W / 2, 190);
+    hctx.fillStyle = 'rgba(0,0,0,0.78)'; hctx.fillRect(0, 0, VW, VH);
+    label('YOU DIED', VW / 2, VH * 0.38, 36 * u);
+    label('Reached floor ' + floor, VW / 2, VH * 0.38 + 34 * u, 18 * u);
+    label('Tap to retry', VW / 2, VH * 0.38 + 80 * u, 18 * u, '#7cc460');
   }
-  ctx.restore();
 }
 
-// ---- input (touch + mouse via pointer events) ----
-const toLogical = e => {
-  const dpr = devicePixelRatio || 1;
-  return { x: (e.clientX * dpr - offX) / scale, y: (e.clientY * dpr - offY) / scale };
-};
-cv.addEventListener('pointerdown', e => {
+function draw() {
+  renderer.render({ time, cam, player, enemies, orbs, portal, particles, shake });
+  drawHud();
+}
+
+// ---- input (touch + mouse via pointer events; coordinates are CSS pixels) ----
+const toLogical = e => ({ x: e.clientX, y: e.clientY });
+hud.addEventListener('pointerdown', e => {
   if (state === 'dead') { newRun(); return; }
   if (stick.active) return;
   const p = toLogical(e);
   Object.assign(stick, { active: true, id: e.pointerId, ox: p.x, oy: p.y, dx: 0, dy: 0 });
-  cv.setPointerCapture(e.pointerId);
+  hud.setPointerCapture(e.pointerId);
 });
-cv.addEventListener('pointermove', e => {
+hud.addEventListener('pointermove', e => {
   if (!stick.active || e.pointerId !== stick.id) return;
   const p = toLogical(e);
   stick.dx = p.x - stick.ox; stick.dy = p.y - stick.oy;
 });
 const release = e => { if (e.pointerId === stick.id) { stick.active = false; stick.dx = stick.dy = 0; } };
-cv.addEventListener('pointerup', release);
-cv.addEventListener('pointercancel', release);
+hud.addEventListener('pointerup', release);
+hud.addEventListener('pointercancel', release);
 
 const keys = {};
 function kb() {
@@ -639,6 +413,7 @@ function frame(now) {
   draw();
   requestAnimationFrame(frame);
 }
+resize();
 newRun();
 requestAnimationFrame(frame);
 
@@ -654,7 +429,7 @@ window.__game = {
   get cam() { return [cam.x, cam.y]; },
   get player() { return [player.x, player.y]; },
   get enemyList() { return enemies.map(e => [e.x, e.y]); },
-  teleport(x, y) { player.x = x; player.y = y; cam.x = clamp(x - W / 2, 0, world.cols * TILE - W); cam.y = clamp(y - H / 2, 0, world.rows * TILE - H); },
+  teleport(x, y) { player.x = x; player.y = y; const f = camTarget(); cam.x = f.x; cam.y = f.y; },
   findTile(t) { for (let y = 0; y < world.rows; y++) for (let x = 0; x < world.cols; x++) if (world.grid[y][x] === t) return [x * TILE + 8, y * TILE + 8]; return null; },
   killAll() { enemies.forEach(e => { e.hp = 0; }); },
 };
