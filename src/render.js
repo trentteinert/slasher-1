@@ -276,6 +276,7 @@ void main() {
 
   // call once a frame with the frame time in ms; steps quality down when it stays slow
   adapt(dtMs) {
+    if (this.locked) return;
     this.ema += (Math.min(dtMs, 100) - this.ema) * 0.05;
     if (this.ema > 26) { this.slow++; this.fast = 0; } else if (this.ema < 14) { this.fast++; this.slow = 0; } else { this.slow = 0; this.fast = 0; }
     if (this.slow > 90 && this.quality > 0) { this.setQuality(this.quality - 1); this.slow = 0; this.ema = 16; }
@@ -601,7 +602,7 @@ void main() {
   }
 
   render(s) {
-    const { time, cam, player, enemies, orbs, portal, particles, shots, fx, shake } = s;
+    const { time, cam, player, enemies, orbs, portal, particles, shots, fx, blades = [], shake } = s;
     const sx = shake ? (Math.random() - 0.5) * shake * U * 2 : 0, sz = shake ? (Math.random() - 0.5) * shake * U * 2 : 0;
 
     // camera: fixed tilt looking north, following the focus point
@@ -621,6 +622,7 @@ void main() {
     this.renderEnemies(enemies, time);
     this.renderOrbs(orbs, time);
     this.renderShots(shots, time);
+    this.renderBlades(blades);
     this.renderFx(fx);
     this.renderPortal(portal, time);
     this.renderFlames(time, fx0, fz0);
@@ -680,7 +682,8 @@ void main() {
     let theta, len = 1;
     const sway = Math.sin(time * 3) * 0.04;
     if (sw) {
-      const a0 = sw.a - sw.dir * (p.arc / 2 + 0.5), a1 = sw.a + sw.dir * (p.arc / 2);
+      const arc = sw.arc ?? p.arc, rng2 = sw.range ?? p.range;
+      const a0 = sw.a - sw.dir * (arc / 2 + 0.5), a1 = sw.a + sw.dir * (arc / 2);
       const e = 1 - (1 - Math.min(q, 1)) * (1 - Math.min(q, 1));
       const ang = a0 + (a1 - a0) * e;
       theta = Math.atan2(Math.sin(ang) * SIN_P, Math.cos(ang));
@@ -688,14 +691,14 @@ void main() {
       const behind = Math.sin(ang) < 0;
       this.place(this.sword, hx + Math.cos(sw.a) * 3 * U, hz + Math.sin(sw.a) * 3 * U, 10 * U + bob, 0, behind ? 0.07 : -0.07);
       const head = e, t2 = Math.min(Math.max(q - 0.55, 0), 1), tail = 1 - (1 - t2) * (1 - t2);
-      this.updateTrail(hx, hz, a0 + (a1 - a0) * tail, a0 + (a1 - a0) * head, p.range * 0.92 * U, head > tail + 0.01);
+      this.updateTrail(hx, hz, a0 + (a1 - a0) * tail, a0 + (a1 - a0) * head, rng2 * 0.92 * U, head > tail + 0.01);
     } else {
       this.trail.visible = false;
       if (v === 'down') { theta = -1.15 + sway; this.place(this.sword, hx, hz, 10 * U + bob, 4 * U, 0.07); }
       else if (v === 'up') { theta = -1.95 + sway; this.place(this.sword, hx, hz, 11 * U + bob, -2 * U, -0.07); }
       else { theta = (f > 0 ? -2.2 : -0.94) + sway; this.place(this.sword, hx, hz, 10 * U + bob, -f * 2 * U, 0.07); }
     }
-    const k = p.range / 24;
+    const k = (sw?.range ?? p.range) / 24;
     this.sword.scale.set(k, k * len, 1);
     this.sword.quaternion.multiply(this.qz.setFromAxisAngle(this.zAxis, -(theta + Math.PI / 2)));
   }
@@ -740,11 +743,13 @@ void main() {
   renderOrbs(orbs, time) {
     for (const o of orbs) {
       const ent = this.ent(o, () => {
-        const c = new THREE.Color(o.kind.colors.m);
-        const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(0.17, 1), new THREE.MeshLambertMaterial({ color: c, emissive: c, emissiveIntensity: 0.65, flatShading: true }));
+        const c = new THREE.Color(o.color);
+        const r = 0.15 + 0.03 * o.tier;
+        const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 1), new THREE.MeshLambertMaterial({ color: c, emissive: c, emissiveIntensity: 0.55 + 0.15 * o.tier, flatShading: true }));
         mesh.castShadow = true;
-        const glow = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 1.4),
-          new THREE.MeshBasicMaterial({ map: this.glowTex, color: c, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+        const gs = 1.3 + 0.35 * o.tier;
+        const glow = new THREE.Mesh(new THREE.PlaneGeometry(gs, gs),
+          new THREE.MeshBasicMaterial({ map: this.glowTex, color: c, transparent: true, opacity: 0.5 + 0.1 * o.tier, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
         const shadow = new THREE.Mesh(this.shadowGeo, this.shadowMat);
         this.scene.add(mesh, glow, shadow);
         return { mesh, glow, shadow };
@@ -752,6 +757,8 @@ void main() {
       const bob = Math.sin(o.t * 4) * 0.08;
       ent.mesh.position.set(o.x * U, 0.4 + bob, o.y * U);
       ent.mesh.rotation.y = o.t * 2;
+      const pulse = o.tier >= 2 ? 1 + 0.12 * Math.sin(o.t * 6) : 1; // rare+ orbs pulse
+      ent.glow.scale.setScalar(pulse);
       this.place(ent.glow, o.x * U, o.y * U, 0.4 + bob, 0, 0.08);
       ent.shadow.scale.setScalar(0.35);
       ent.shadow.position.set(o.x * U, 0.03, o.y * U);
@@ -777,12 +784,32 @@ void main() {
     }
   }
 
+  // spinning blades that orbit the hero (Orbiting Blades power-up)
+  renderBlades(blades) {
+    if (!this.bladeMeshes) this.bladeMeshes = [];
+    while (this.bladeMeshes.length < blades.length) {
+      const m = this.body(this.SPR.sword, 2, [2.5, 16.5]);
+      m.scale.setScalar(0.6);
+      this.scene.add(m);
+      this.bladeMeshes.push(m);
+    }
+    this.bladeMeshes.forEach((m, i) => {
+      const b = blades[i];
+      m.visible = !!b;
+      if (!b) return;
+      const dir = b.a + Math.PI / 2; // point along the direction of travel
+      this.place(m, b.x * U, b.y * U, 0.3);
+      m.quaternion.multiply(this.qz.setFromAxisAngle(this.zAxis, -(Math.atan2(Math.sin(dir) * SIN_P, Math.cos(dir)) + Math.PI / 2)));
+    });
+  }
+
   // ground telegraphs and shockwaves
   renderFx(list) {
     for (const f of list) {
+      if (f.kind === 'bolt') { this.renderBolt(f); continue; }
       const ent = this.ent(f, () => {
         const group = new THREE.Group();
-        const mat = new THREE.MeshBasicMaterial({ color: f.kind === 'shock' ? 0xffffff : 0xff3b30, transparent: true, opacity: 0.3, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false });
+        const mat = new THREE.MeshBasicMaterial({ color: f.color ? new THREE.Color(f.color) : f.kind === 'shock' ? 0xffffff : 0xff3b30, transparent: true, opacity: 0.3, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false });
         const disc = new THREE.Mesh(new THREE.CircleGeometry(1, 24).rotateX(-Math.PI / 2), mat);
         const ring = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 24).rotateX(-Math.PI / 2), mat.clone());
         ring.material.opacity = 0.8;
@@ -802,6 +829,21 @@ void main() {
         ent.disc.material.opacity = 0.25 + 0.3 * k; ent.ring.material.opacity = 0.5 + 0.4 * Math.sin(f.t * 20) ** 2;
       }
     }
+  }
+
+  // chain-lightning arc between two enemies
+  renderBolt(f) {
+    const ent = this.ent(f, () => {
+      const pts = [];
+      for (let i = 0; i <= 5; i++) {
+        const t = i / 5, j = i === 0 || i === 5 ? 0 : (Math.random() - 0.5) * 0.45;
+        pts.push(new THREE.Vector3((f.x + (f.x2 - f.x) * t) * U + j, 0.5 + (Math.random() - 0.5) * 0.08, (f.y + (f.y2 - f.y) * t) * U + j));
+      }
+      const mesh = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0xbfeaff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+      this.scene.add(mesh);
+      return { mesh };
+    });
+    ent.mesh.material.opacity = 1 - Math.min(1, f.t / f.dur);
   }
 
   renderPortal(portal, time) {

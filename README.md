@@ -14,7 +14,13 @@ rendered at low resolution and upscaled with nearest filtering so everything sta
   Stone Golem (rock volleys + charge), then tougher recolours.
 - **Performance:** trees are merged and chunked so far ones are culled, rendering is low-res, and the
   game steps quality down automatically if frames get slow (shadows, then resolution).
-- **Test seed:** add `?seed=21` to the URL for the same map every time.
+- **Menu:** title screen over the live 3D forest (Play, How to Play, Graphics: Auto/High/Low), a pause
+  button in-game, and a game-over screen with your collected power-ups and best floor.
+- **Power-ups:** orbs come in four tiers (white, green, blue, gold). Picking one up opens a pop-up with
+  3 choices, each rolled as Common, Uncommon, Rare or Legendary. 23 upgrades in `src/upgrades.js`, from
+  stat boosts to chain lightning, orbiting blades, crescent waves, whirlwind, explosions, an Aegis
+  barrier, Fortune (better odds) and a one-time Phoenix revive.
+- **Test seed:** add `?seed=21` to the URL for the same map every time, and `?play` to skip the menu.
 
 Layout: `src/sprites.js` (pixel art as text maps), `src/world.js` (floor generation),
 `src/render.js` (3D scene, camera, lighting, billboards), `src/main.js` (game logic + HUD).
