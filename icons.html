@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Slasher icons</title>
+<style>body{background:#1d1a2e;margin:16px;font:12px monospace;color:#fff}.row{display:flex;flex-wrap:wrap;gap:14px}
+figure{margin:0;text-align:center;width:96px}canvas{image-rendering:pixelated;display:block;margin:0 auto 4px;background:#4d8dff;border-radius:50%;padding:12px;width:64px;height:64px}</style></head>
+<body><div class="row" id="row"></div>
+<script type="module">
+  import { buildIcons } from './src/icons.js';
+  const row = document.getElementById('row');
+  for (const [id, c] of Object.entries(buildIcons())) {
+    const f = document.createElement('figure'); c.style.width = '64px'; c.style.height = '64px'; f.append(c, id); row.append(f);
+  }
+</script></body></html>

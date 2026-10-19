@@ -1,7 +1,8 @@
 import { buildSprites } from './sprites.js';
 import { TILE, T, isSolid, genFloor, floorSize, distanceField } from './world.js';
 import { Renderer } from './render.js';
-import { RARITIES, UPGRADES, newMods, rollOrbTier, rollChoices, applyChoice, cardName, cardText } from './upgrades.js';
+import { buildIcons } from './icons.js';
+import { RARITIES, UPGRADES, newMods, rollChoices, applyChoice, cardName, cardText } from './upgrades.js';
 
 // Game logic runs in "pixels" (16 per tile); src/render.js draws it as a 3D world with
 // sprite characters, and the HUD is a 2D canvas laid over the top.
@@ -10,6 +11,7 @@ const hud = document.getElementById('hud');
 const hctx = hud.getContext('2d');
 const SPR = buildSprites();
 const renderer = new Renderer(glCanvas, SPR);
+const ICONS = buildIcons();
 
 let VW = innerWidth, VH = innerHeight;
 function resize() {
@@ -21,9 +23,15 @@ function resize() {
 }
 addEventListener('resize', resize);
 
-// Orbs drop from monsters; their colour is their tier, and the tier decides how good the
-// three power-up choices you get on pickup tend to be.
-const ORB_COLORS = ['#cfd4dc', '#52c86a', '#4d8dff', '#ffb020'];
+// Orbs drop from monsters and give a small permanent boost the moment you touch them.
+// (The big rarity power-up choices come at the end of each floor instead.)
+const ORB_KINDS = [
+  { name: 'Power', color: '#e5484d', text: '+10% damage', apply: p => { p.dmg *= 1.1; } },
+  { name: 'Haste', color: '#f5c542', text: '+7% attack speed', apply: p => { p.cd *= 0.93; } },
+  { name: 'Reach', color: '#4d8dff', text: '+7% slash range', apply: p => { p.range *= 1.07; } },
+  { name: 'Swift', color: '#4fd6d6', text: '+5% move speed', apply: p => { p.speed *= 1.05; } },
+  { name: 'Vigor', color: '#52c86a', text: '+10 max HP', apply: p => { p.maxHp += 10; p.hp += 10; } },
+];
 
 const ENEMY_TYPES = {
   chomper: { sprite: 'chomper', hp: 14, speed: 30, dmg: 8, size: 16, cr: 4, drop: 0.25, ai: 'chase' },
@@ -314,9 +322,9 @@ function fireWave(a) {
   shots.push({ friendly: true, x: player.x, y: player.y, vx: Math.cos(a) * 130, vy: Math.sin(a) * 130, r: 9, dmg: player.dmg * 0.6, life: 0.55, color: '#8fe9ff', hit: new Set() });
 }
 
-function dropOrb(x, y, minTier = 0, tier) {
-  tier = tier ?? rollOrbTier(floor, minTier);
-  orbs.push({ x, y, tier, color: ORB_COLORS[tier], t: Math.random() * 6 });
+function dropOrb(x, y) {
+  const kind = ORB_KINDS[Math.floor(Math.random() * ORB_KINDS.length)];
+  orbs.push({ x, y, kind, color: kind.color, tier: 0, t: Math.random() * 6 });
 }
 function say(text, x, y) { texts.push({ text, x, y, rise: 0, life: 1.4 }); }
 
@@ -339,11 +347,11 @@ function applyPref() {
 }
 
 // the pop-up: three power-ups, each with its own rarity; the orb's tier tilts the odds
-function openChoice(tier) {
-  const cards = rollChoices(player, tier, floor);
+function openChoice(entry) {
+  const cards = rollChoices(player, entry.tier, floor);
   if (!cards.length) return;
   state = 'choose'; uiT = 0; stick.active = false; stick.dx = stick.dy = 0;
-  choice = { cards, tier, t0: 0 };
+  choice = { cards, tier: entry.tier, title: entry.title, boss: !!entry.boss };
 }
 function choose(i) {
   if (state !== 'choose' || !choice || uiT < 0.35) return;
@@ -548,11 +556,10 @@ function update(dt) {
     if (e.hp > 0) continue;
     burst(e.x, e.y, '#fbbf24', e.type.boss ? 30 : 8, e.type.boss ? 14 : 6);
     if (e.type.boss) {
-      dropOrb(e.x, e.y, 2, Math.random() < 0.25 ? 3 : 2); // a boss always drops at least a rare orb
-      for (let k = 0; k < 2; k++) dropOrb(e.x + rand(-12, 12), e.y + rand(-12, 12), 1);
+      for (let k = 0; k < 3; k++) dropOrb(e.x + rand(-12, 12), e.y + rand(-12, 12));
       shake = 7; msg = { text: `${e.type.name} defeated!`, t: 3 };
       bossRef = null;
-    } else if (Math.random() < e.type.drop) dropOrb(e.x, e.y, e.type === ENEMY_TYPES.brute ? 1 : 0);
+    } else if (Math.random() < e.type.drop) dropOrb(e.x, e.y);
     enemies.splice(i, 1);
     if (player.mods.volatile) nova(e.x, e.y, 28, player.dmg * player.mods.volatile, '#ff9a3c');
   }
@@ -578,8 +585,9 @@ function update(dt) {
     const dx = player.x - o.x, dy = player.y - o.y, d = Math.hypot(dx, dy);
     if (d < 40) { o.x += (dx / d) * 70 * dt; o.y += (dy / d) * 70 * dt; }
     if (d < 8) {
-      burst(o.x, o.y, o.color, 12, 10);
-      pending.push(o.tier);
+      o.kind.apply(player);
+      say(`${o.kind.name} ${o.kind.text}`, player.x, player.y);
+      burst(o.x, o.y, o.color, 10, 10);
       orbs.splice(i, 1);
     }
   }
@@ -588,8 +596,10 @@ function update(dt) {
   if (!portal.open && enemies.length === 0) {
     portal.open = true;
     msg = { text: 'Floor clear! Find the portal', t: 3 };
+    pending.push({ tier: 0, title: 'FLOOR CLEARED' });
+    if (floor % 5 === 0) pending.push({ tier: Math.random() < 0.25 ? 3 : 2, title: 'BOSS REWARD', boss: true });
   }
-  if (portal.open && Math.hypot(player.x - portal.x, player.y - portal.y) < 9) nextFloor();
+  if (portal.open && state === 'play' && !pending.length && Math.hypot(player.x - portal.x, player.y - portal.y) < 9) nextFloor();
 
   for (const p of particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.h = Math.max(0, p.h + p.vh * dt); p.vh -= 160 * dt; p.life -= dt; }
   particles = particles.filter(p => p.life > 0);
@@ -632,7 +642,12 @@ function arrowTo(wx, wy, color) {
 
 // ---- UI helpers ----
 let u = 1; // UI scale, set each frame
-const EMOJI = '"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
+// icons are 16x16 pixel art; draw at an integer scale so the pixels stay crisp
+function drawIcon(id, cx, cy, size) {
+  const sc = Math.max(1, Math.round(size / 16)), px = 16 * sc;
+  hctx.imageSmoothingEnabled = false;
+  hctx.drawImage(ICONS[id], Math.round(cx - px / 2), Math.round(cy - px / 2), px, px);
+}
 const rr = (x, y, w, h, r) => {
   hctx.beginPath(); hctx.moveTo(x + r, y);
   hctx.arcTo(x + w, y, x + w, y + h, r); hctx.arcTo(x + w, y + h, x, y + h, r);
@@ -711,8 +726,8 @@ function drawChoice() {
   const cx = VW / 2;
   const cw = Math.min(VW - 28, 380 * Math.max(1, u * 0.9)), ch = clamp(VH * 0.165, 104, 142), gap = 12 * u;
   const y0 = (VH - (3 * ch + 2 * gap)) / 2 + 26 * u;
-  label('CHOOSE A POWER-UP', cx, y0 - 46 * u, 21 * u, '#fff');
-  label(`${RARITIES[choice.tier].name} ORB`, cx, y0 - 22 * u, 13 * u, RARITIES[choice.tier].color);
+  label(choice.title, cx, y0 - 46 * u, 22 * u, choice.boss ? '#ffd84a' : '#fff');
+  label('CHOOSE A POWER-UP', cx, y0 - 22 * u, 13 * u, choice.boss ? '#ffe9a8' : '#cfe6c0');
 
   choice.cards.forEach((c, i) => {
     const rar = RARITIES[c.rarity];
@@ -751,9 +766,7 @@ function drawChoice() {
     ig.addColorStop(0, rar.color); ig.addColorStop(1, rar.glow);
     hctx.fillStyle = ig; hctx.fill();
     hctx.lineWidth = 2 * u; hctx.strokeStyle = 'rgba(0,0,0,0.5)'; hctx.stroke();
-    hctx.font = `${ch * 0.34}px ${EMOJI}`; hctx.textAlign = 'center'; hctx.textBaseline = 'middle';
-    hctx.fillStyle = '#fff'; hctx.fillText(c.up.icon, ix, iy + 2);
-    hctx.textBaseline = 'alphabetic';
+    drawIcon(c.up.id, ix, iy, ir * 1.55);
 
     // text
     const tx = x + ch * 0.98, tw = cw - ch * 0.98 - 14 * u;
@@ -798,7 +811,7 @@ function drawDead() {
 // power-ups collected so far, grouped, as a row of rarity-ringed icons
 function drawPicks(y, small = false) {
   const groups = new Map();
-  for (const pk of player.picks) { const g = groups.get(pk.id) || { icon: pk.icon, n: 0, rarity: 0 }; g.n++; g.rarity = Math.max(g.rarity, pk.rarity); groups.set(pk.id, g); }
+  for (const pk of player.picks) { const g = groups.get(pk.id) || { id: pk.id, n: 0, rarity: 0 }; g.n++; g.rarity = Math.max(g.rarity, pk.rarity); groups.set(pk.id, g); }
   if (!groups.size) return;
   const size = (small ? 17 : 24) * u, step = size + 8 * u, perRow = Math.max(1, Math.floor((VW - 24) / step));
   let n = 0;
@@ -810,8 +823,7 @@ function drawPicks(y, small = false) {
     hctx.beginPath(); hctx.arc(x, yy, size * 0.62, 0, Math.PI * 2);
     hctx.fillStyle = 'rgba(14,12,24,0.78)'; hctx.fill();
     hctx.lineWidth = 2 * u; hctx.strokeStyle = RARITIES[g.rarity].color; hctx.stroke();
-    hctx.font = `${size * 0.8}px ${EMOJI}`; hctx.textAlign = 'center'; hctx.textBaseline = 'middle'; hctx.fillStyle = '#fff';
-    hctx.fillText(g.icon, x, yy + 1); hctx.textBaseline = 'alphabetic';
+    drawIcon(g.id, x, yy, size * 0.95);
     if (g.n > 1) label('x' + g.n, x + size * 0.55, yy + size * 0.85, 10 * u, '#ffd84a');
     n++;
   }
@@ -978,7 +990,10 @@ window.__game = {
   die() { player.hp = 0; hurtPlayer(1); },
   get choice() { return choice ? choice.cards.map(c => ({ name: cardName(c), rarity: c.rarity, text: cardText(c) })) : null; },
   choose(i) { uiT = 1; choose(i); },
-  giveOrb(tier = 0) { dropOrb(player.x + 2, player.y, 0, tier); },
+  giveOrb() { dropOrb(player.x + 2, player.y); },
+  reward(tier = 0, boss = false) { openChoice({ tier, title: boss ? 'BOSS REWARD' : 'FLOOR CLEARED', boss }); },
+  get pending() { return pending.length; },
+  get dmg() { return player.dmg; },
   get picks() { return player.picks.map(p => p.id); },
   get mods() { return player.mods; },
   get blades() { return player.blades.length; },
