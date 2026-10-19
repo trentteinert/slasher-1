@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>Slasher sprites</title>
 <style>
-  body { background: #6f9c3c; margin: 16px; font: 12px monospace; color: #fff; }
+  body { background: #76943f; margin: 16px; font: 12px monospace; color: #fff; }
   .row { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; margin-bottom: 20px; }
   figure { margin: 0; text-align: center; }
   canvas { image-rendering: pixelated; display: block; }
@@ -16,10 +16,13 @@
   import { buildSprites, orbSprite } from './src/sprites.js';
   const S = buildSprites();
   const items = {
-    heroIdle: S.hero.idle, heroWalkA: S.hero.walkA, heroWalkB: S.hero.walkB, sword: S.sword,
+    down: S.hero.down.idle, downA: S.hero.down.walkA, downB: S.hero.down.walkB,
+    up: S.hero.up.idle, upA: S.hero.up.walkA,
+    side: S.hero.side.idle, sideA: S.hero.side.walkA, sideB: S.hero.side.walkB,
+    shield: S.shield, sword: S.sword,
     chomper: S.chomper, bulb: S.bulb, brute: S.brute,
-    tree: S.tree[0], tree2: S.tree[1], rock: S.rock, fireA: S.fire[0], fireB: S.fire[1], torch: S.torch,
-    grass: S.grass[2], water: S.water[0],
+    tree: S.tree[0], tree2: S.tree[1], treePink: S.tree[2], rock: S.rock,
+    fireA: S.fire[0], torch: S.torch, grass: S.grass[2],
     orb: orbSprite({ m: '#e5484d', M: '#8f1d2c', W: '#ffd0d0' }),
   };
   const row = document.getElementById('row');
@@ -31,11 +34,11 @@
   }
   // a small dense forest to compare against the reference
   const forest = document.createElement('canvas');
-  forest.width = 16 * 8; forest.height = 16 * 5;
+  forest.width = 16 * 8; forest.height = 16 * 6;
   forest.style.width = forest.width * 6 + 'px';
   const g = forest.getContext('2d');
-  for (let y = 0; y < 5; y++) for (let x = 0; x < 8; x++) g.drawImage(S.grass[(x + y) % 4], x * 16, y * 16);
-  for (let y = 0; y < 5; y++) for (let x = 0; x < 8; x++) g.drawImage(S.tree[(x * 7 + y * 3) % 2], x * 16 + ((y & 1) ? 4 : -4), y * 16 - 2);
+  for (let y = 0; y < 6; y++) for (let x = 0; x < 8; x++) g.drawImage(S.grass[(x + y) % 4], x * 16, y * 16);
+  for (let y = 0; y < 6; y++) for (let x = 0; x < 8; x++) g.drawImage(S.tree[(x * 31 + y * 17) % 23 === 0 ? 2 : (x * 7 + y * 3) % 2], x * 16 + ((y & 1) ? 4 : -4), y * 16 - 4);
   document.body.append(forest);
 </script>
 </body>

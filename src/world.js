@@ -69,14 +69,15 @@ function tryGen(seed, cols, rows) {
     for (let i = 0; i < count; i++) {
       let x = 2 + Math.floor(r() * (cols - 4)), y = 2 + Math.floor(r() * (rows - 4));
       for (let n = 0; n < size; n++) {
-        if (inner(x, y) && !nearSpawn(x, y)) grid[y][x] = type;
+        const stamp = type === T.WATER ? [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]] : [[0, 0]];
+        for (const [sx, sy] of stamp) if (inner(x + sx, y + sy) && !nearSpawn(x + sx, y + sy)) grid[y + sy][x + sx] = type;
         const [dx, dy] = DIRS[Math.floor(r() * 4)];
         x += dx; y += dy;
       }
     }
   };
-  blob(T.WATER, Math.round(k * (0.6 + r() * 1.4)), 10);
-  blob(T.TREE, Math.round(k * (2.5 + r() * 2)), 14);
+  blob(T.TREE, Math.round(k * (3 + r() * 2.5)), 26);
+  blob(T.WATER, Math.max(1, Math.round(k * (0.4 + r() * 0.7))), 34); // lakes carve through groves
 
   const scatter = (type, count) => {
     for (let i = 0; i < count; i++) {

@@ -1,8 +1,8 @@
 // All art is defined as pixel maps (one char per pixel) so it can be edited as text.
-// '.' is transparent; letters map to a palette. Environment art uses no black outlines
-// (just darker shades), characters keep a soft dark outline so they pop off the ground.
+// '.' is transparent; letters map to a palette. Environment art has no black outlines
+// (darker shades of the same hue instead); the hero is shaded the same way.
 const PAL = {
-  k: '#2a1f33', // outline
+  k: '#2a1f33', // outline (enemies keep a soft dark outline so they pop off the ground)
   y: '#ffd84a', O: '#f08a24',
   r: '#d9363e', R: '#a02632',
   g: '#4a9d4f', G: '#2f6b3a',
@@ -17,6 +17,7 @@ export function makeSprite(rows, pal = PAL, w = 16, h = 16) {
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
   const g = c.getContext('2d');
+  if (rows.length !== h) throw new Error(`sprite has ${rows.length} rows, expected ${h}`);
   rows.forEach((row, y) => {
     if (row.length !== w) throw new Error(`sprite row ${y} is ${row.length} wide, expected ${w}: ${row}`);
     for (let x = 0; x < w; x++) {
@@ -32,62 +33,114 @@ export function makeSprite(rows, pal = PAL, w = 16, h = 16) {
 
 const BLANK = '................';
 const pad = (rows, top = 0) => [...Array(top).fill(BLANK), ...rows, ...Array(16 - top - rows.length).fill(BLANK)];
+// R(n, s): s placed n pixels from the left, padded out to 16 wide
+const R = (n, s, w = 16) => '.'.repeat(n) + s + '.'.repeat(w - n - s.length);
 
-// ---- hero: a stylized human adventurer (front view; flipped for facing left) ----
+// ---- hero: spiky-haired armored fighter, top-down 3/4 view (down / up / side) ----
 const HERO_PAL = {
-  k: '#2a1f33',
-  H: '#5a3320', J: '#8a5530',
-  f: '#f6d0a8', F: '#d9a27a', e: '#2a1f33', p: '#ef8a8a',
-  R: '#d9363e', D: '#9e2430',
-  t: '#3b8f5a', T: '#2b6a43', b: '#8a5a3c', y: '#ffd84a',
-  q: '#4a4e69', B: '#6a3b24',
+  h: '#232a6b', H: '#3b4fb0', d: '#141845',
+  s: '#d49a58', S: '#a8703a', e: '#14102a',
+  a: '#7d8ab8', A: '#aab5da', z: '#4d5788',
+  r: '#c0314a', R: '#7e1c34',
+  p: '#2c4fa8', P: '#1c3270',
+  b: '#8a5430', B: '#5a3520',
 };
-const HERO_TOP = [
-  '................',
-  '....kkkkkkkk....',
-  '...kHHHHHHHHk...',
-  '..kHHJJJJJJHHk..',
-  '..kHHHffffHHHk..',
-  '..kHffffffffHk..',
-  '..kffeffffeffk..',
-  '..kfpffffffpfk..',
-  '...kkffffffkk...',
-  '....kRRRRRRk....',
-  '...kRRDDDDRRk...',
-  '..kttttttttttk..',
-  '.kfkttbyybttkfk.',
-  '..kktTTTTTTtkk..',
+const HERO_DOWN = [
+  R(5, 'h..h.h'),
+  R(4, 'hhhhhhhh'),
+  R(3, 'hhHhhhhHhh'),
+  R(3, 'hhhhhhhhhh'),
+  R(3, 'hdssssssdh'),
+  R(4, 'sessssse'),
+  R(4, 'sssSSsss'),
+  R(5, 'ssssss'),
+  R(2, 'zAAaarrraaAz'),
+  R(2, 'zAaaaaaaaaAz'),
+  R(2, 'zaaazzzzaaaz'),
+  R(2, 'zaaaaaaaaaaz'),
+  R(2, 'sszaaaaaazss'),
+  R(4, 'zaaaaaaz'),
+  R(4, 'pppPPppp'),
 ];
-const HERO_LEGS = {
-  idle: ['...kqqqkkqqqk...', '...kBBBkkBBBk...'],
-  walkA: ['...kqqqk.kqqk...', '...kBBBk.kBBk...'],
-  walkB: ['...kqqk.kqqqk...', '...kBBk.kBBBk...'],
+const HERO_UP = [
+  R(5, 'h..h.h'),
+  R(4, 'hhhhhhhh'),
+  R(3, 'hhHhhhhHhh'),
+  R(3, 'hhhhhhhhhh'),
+  R(3, 'hhhhhhhhhh'),
+  R(4, 'hhhhhhhh'),
+  R(4, 'hdhhhhdh'),
+  R(5, 'dhhhhd'),
+  R(2, 'zAAaaaaaaAAz'),
+  R(2, 'zArrrrrrrrAz'),
+  R(2, 'zarrrrrrrraz'),
+  R(2, 'zarrRrrRrraz'),
+  R(2, 'zarrrrrrrraz'),
+  R(3, 'RrrrRRrrrR'),
+  R(4, 'pppPPppp'),
+];
+const HERO_SIDE = [
+  R(4, 'h..h.h'),
+  R(3, 'hhhhhhhh'),
+  R(3, 'hhHhhhhhh'),
+  R(3, 'hhhhhhhhs'),
+  R(4, 'hhhsssss'),
+  R(4, 'hhsssess'),
+  R(5, 'hsssssS'),
+  R(6, 'dsss'),
+  R(3, 'rrzAAaaAz'),
+  R(3, 'rrrzAaaaz'),
+  R(3, 'rRrzzzzaz'),
+  R(3, 'rrrzaaaaz'),
+  R(3, 'RrrzaaaSs'),
+  R(4, 'rrzaaaaz'),
+  R(5, 'pppPpp'),
+];
+const LEGS_FRONT = {
+  idle: [R(4, 'ppp..ppp'), R(4, 'ppp..ppp'), R(4, 'bbb..bbb'), R(3, 'bBBb..bBBb')],
+  walkA: [R(4, 'ppp..ppp'), R(4, 'pp...ppp'), R(4, 'bb...bbb'), R(3, 'bBb...bBBb')],
+  walkB: [R(4, 'ppp..ppp'), R(4, 'ppp...pp'), R(4, 'bbb...bb'), R(3, 'bBBb...bBb')],
+};
+const LEGS_SIDE = {
+  idle: [R(5, 'pppppp'), R(5, 'pppppp'), R(5, 'bbbbbb'), R(4, 'bBBBBbb')],
+  walkA: [R(4, 'ppp..ppp'), R(3, 'ppp...ppp'), R(3, 'bbb...bbb'), R(2, 'bBBb...bBBb')],
+  walkB: [R(5, 'ppp.pp'), R(5, 'pp..pp'), R(5, 'bb..bb'), R(4, 'bBb..bBb')],
 };
 
-// Big sword, pointing up; pivot is the middle of the grip (x=3.5, y=17.5).
-const SWORD_PAL = { k: '#2a1f33', S: '#b9c2d6', W: '#ffffff', y: '#ffd84a', O: '#c9801e', n: '#8a5a3c' };
+const SHIELD_PAL = { o: '#e8873a', r: '#c0314a', R: '#7e1c34', y: '#ffd84a' };
+const SHIELD = [
+  '..oooo..',
+  '.orrrro.',
+  'orrRRrro',
+  'orRyyRro',
+  'orRyyRro',
+  'orrRRrro',
+  '.orrrro.',
+  '..oooo..',
+];
+
+// Big sword, pointing up; pivot is the middle of the grip (x=2.5, y=16.5).
+const SWORD_PAL = { g: '#aab5da', W: '#ffffff', y: '#ffd84a', o: '#c9801e', n: '#8a5a3c', z: '#6b7396' };
 const SWORD = [
-  '...k...',
-  '..kWk..',
-  '.kSWSk.',
-  '.kSWSk.',
-  '.kSWSk.',
-  '.kSWSk.',
-  '.kSWSk.',
-  '.kSWSk.',
-  '.kSWSk.',
-  '.kSWSk.',
-  '.kSWSk.',
-  '.kSWSk.',
-  '.kSWSk.',
-  'kyyyyyk',
-  'kOOOOOk',
-  '..knk..',
-  '..knk..',
-  '..knk..',
-  '.kyyyk.',
-  '.kkkkk.',
-  '.......',
+  '..W..',
+  '.gWg.',
+  '.gWg.',
+  '.gWg.',
+  '.gWg.',
+  '.gWg.',
+  '.gWg.',
+  '.gWg.',
+  '.gWg.',
+  '.gWg.',
+  '.gWg.',
+  '.gWz.',
+  '.zWz.',
+  'oyyyo',
+  '.ooo.',
+  '..n..',
+  '..n..',
+  '..n..',
+  '.yyy.',
 ];
 
 const CHOMPER = pad([
@@ -192,34 +245,32 @@ export function orbSprite({ m, M, W }) {
   return makeSprite(ORB_MAP, { ...PAL, m, M, W }, 8, 8);
 }
 
-// Layered scalloped pine, like the reference: light left, dark right, a shadowed
-// underside on every tier, and reddish roots at the base.
-function makeTree(variant) {
+// Chunky scalloped pine in muted teal-green: lighter top-left, shadowed underside on
+// every tier, reddish root tips at the base. 16x20 so forests overlap like the reference.
+const TREE_GREEN = { e: '#1f4a38', d: '#2c6849', m: '#3a7f58', h: '#4f9a69', H: '#6db582' };
+const TREE_PINK = { e: '#5b2b3e', d: '#7b4057', m: '#9a566c', h: '#b8707f', H: '#d792a0' };
+function makeTree(P, tiers) {
   const c = document.createElement('canvas');
-  c.width = c.height = 16;
+  c.width = 16; c.height = 20;
   const g = c.getContext('2d');
-  const P = { e: '#1f5233', d: '#2c6e3e', m: '#3f8d4b', h: '#66b05f', H: '#92cf7c' };
   const dim = { H: 'h', h: 'm', m: 'd', d: 'e', e: 'e' };
   const set = (x, y, col) => { g.fillStyle = col; g.fillRect(x, y, 1, 1); };
 
-  // trunk and roots first, tiers cover the top of them
-  for (let y = 11; y < 16; y++) { set(7, y, '#5a3a28'); set(8, y, '#5a3a28'); }
-  [[4, 14], [5, 14], [6, 14], [5, 13], [9, 14], [10, 14], [11, 14], [10, 13]].forEach(([x, y]) => set(x, y, '#a8553f'));
-  [[3, 15], [4, 15], [5, 15], [6, 15], [9, 15], [10, 15], [11, 15], [12, 15]].forEach(([x, y]) => set(x, y, '#6e3228'));
+  for (let y = 14; y < 20; y++) { set(7, y, '#5a3a28'); set(8, y, '#5a3a28'); }
+  [[4, 17], [5, 17], [6, 17], [5, 16], [9, 17], [10, 17], [11, 17], [10, 16]].forEach(([x, y]) => set(x, y, '#a8553f'));
+  [[3, 18], [4, 18], [5, 18], [6, 18], [9, 18], [10, 18], [11, 18], [12, 18], [4, 19], [5, 19], [10, 19], [11, 19]].forEach(([x, y]) => set(x, y, '#6e3228'));
 
-  const tiers = variant
-    ? [{ top: 0, h: 5, hw: 5 }, { top: 3, h: 6, hw: 7 }, { top: 7, h: 7, hw: 8 }]
-    : [{ top: 1, h: 5, hw: 5 }, { top: 4, h: 5, hw: 7 }, { top: 8, h: 6, hw: 8 }];
   for (const { top, h, hw } of tiers) {
     for (let t = 0; t < h; t++) {
-      const w = Math.max(1, Math.round(hw * (t + 1) / h));
+      const w = Math.max(2, Math.round(hw * Math.pow((t + 1) / h, 0.4)));
       for (let px = 8 - w; px < 8 + w; px++) {
-        if (t === h - 1 && (px - (8 - w)) % 4 === 3) continue; // scalloped lower edge
+        if (t === h - 1 && (px - (8 - w)) % 5 === 4) continue; // scalloped lower edge
         const u = (px - (8 - w)) / (2 * w - 1);
-        let k = u < 0.3 ? 'h' : u < 0.72 ? 'm' : 'd';
+        let k = u < 0.3 ? 'h' : u < 0.7 ? 'm' : 'd';
+        if (u < 0.18 && t >= 1 && t <= h - 3) k = 'H';
+        if (t === 0 && u > 0.15 && u < 0.85) k = 'H';
         if (px === 8 + w - 1) k = 'e';
         if (t >= h - 2) k = dim[k];
-        if (t === 1 && u < 0.45 && u > 0.1) k = 'H';
         set(px, top + t, P[k]);
       }
     }
@@ -227,44 +278,50 @@ function makeTree(variant) {
   return c;
 }
 
-// Olive grass with soft speckle and the odd flower, seeded so tiles are stable.
-function ground(base, dark, light, seed, flowers = false) {
+// Mostly flat olive grass with a few tiny specks; the character comes from the
+// large patches painted per pixel over the whole floor.
+function ground(base, dark, light, seed) {
   const c = document.createElement('canvas');
   c.width = c.height = 16;
   const g = c.getContext('2d');
   g.fillStyle = base; g.fillRect(0, 0, 16, 16);
   let s = seed;
   const rnd = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
-  for (let i = 0; i < 9; i++) { g.fillStyle = dark; g.fillRect(Math.floor(rnd() * 16), Math.floor(rnd() * 16), 2, 1); }
-  for (let i = 0; i < 6; i++) { g.fillStyle = light; g.fillRect(Math.floor(rnd() * 16), Math.floor(rnd() * 16), 1, 1); }
-  if (flowers) {
-    g.fillStyle = '#f4f1d0'; g.fillRect(Math.floor(rnd() * 14), Math.floor(rnd() * 14), 1, 1);
-    g.fillStyle = '#ffd84a'; g.fillRect(Math.floor(rnd() * 14), Math.floor(rnd() * 14), 1, 1);
-  }
+  for (let i = 0; i < 3; i++) { g.fillStyle = dark; g.fillRect(Math.floor(rnd() * 15), Math.floor(rnd() * 16), 2, 1); }
+  for (let i = 0; i < 4; i++) { g.fillStyle = light; g.fillRect(Math.floor(rnd() * 16), Math.floor(rnd() * 16), 1, 1); }
   return c;
 }
 
 export function buildSprites() {
   const recolor = (rows, map) => makeSprite(rows, { ...PAL, ...map });
-  const heroBody = HERO_TOP.slice(0, 14);
   const hero = {};
-  for (const [name, legs] of Object.entries(HERO_LEGS)) hero[name] = makeSprite([...heroBody, ...legs], HERO_PAL);
+  const views = { down: [HERO_DOWN, LEGS_FRONT], up: [HERO_UP, LEGS_FRONT], side: [HERO_SIDE, LEGS_SIDE] };
+  for (const [view, [top, legs]] of Object.entries(views)) {
+    hero[view] = {};
+    for (const [frame, rows] of Object.entries(legs)) {
+      hero[view][frame] = makeSprite([...top, ...rows, BLANK].slice(0, 20), HERO_PAL, 16, 20);
+    }
+  }
   return {
     hero,
-    sword: makeSprite(SWORD, SWORD_PAL, 7, 21),
+    shield: makeSprite(SHIELD, SHIELD_PAL, 8, 8),
+    sword: makeSprite(SWORD, SWORD_PAL, 5, 19),
     chomper: makeSprite(CHOMPER),
     bulb: makeSprite(BULB),
     brute: recolor(CHOMPER, { O: PAL.u, G: PAL.U, g: PAL.u, k: '#1c1226' }),
-    tree: [makeTree(0), makeTree(1)],
+    tree: [
+      makeTree(TREE_GREEN, [{ top: 2, h: 5, hw: 7 }, { top: 6, h: 5, hw: 8 }, { top: 10, h: 6, hw: 8 }]),
+      makeTree(TREE_GREEN, [{ top: 1, h: 6, hw: 6 }, { top: 5, h: 6, hw: 8 }, { top: 10, h: 6, hw: 8 }]),
+      makeTree(TREE_PINK, [{ top: 2, h: 5, hw: 7 }, { top: 6, h: 5, hw: 8 }, { top: 10, h: 6, hw: 8 }]),
+    ],
     rock: makeSprite(ROCK, ROCK_PAL),
     fire: [makeSprite(FIRE_A), makeSprite(FIRE_B)],
     torch: makeSprite(TORCH),
     grass: [
-      ground('#6f9c3c', '#628e33', '#8fb858', 11),
-      ground('#6f9c3c', '#628e33', '#8fb858', 23),
-      ground('#729f3f', '#658f36', '#c7d98a', 37, true),
-      ground('#6c993a', '#5f8c32', '#8fb858', 51, true),
+      ground('#76943f', '#6a8738', '#93ae57', 11),
+      ground('#76943f', '#6a8738', '#93ae57', 23),
+      ground('#78963f', '#6c8939', '#d9e3a8', 37),
+      ground('#74923e', '#688536', '#93ae57', 51),
     ],
-    water: [ground('#3aa8b0', '#2f93a0', '#8fd6d6', 5), ground('#3aa8b0', '#2f93a0', '#8fd6d6', 9)],
   };
 }

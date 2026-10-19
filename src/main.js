@@ -47,9 +47,9 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const rand = (a, b) => a + Math.random() * (b - a);
 
 function newRun() {
-  seed = (Math.random() * 1e9) | 0;
+  seed = Number(new URLSearchParams(location.search).get('seed')) || (Math.random() * 1e9) | 0;
   floor = 0;
-  player = { x: 0, y: 0, r: 7, cr: 4, hp: 100, maxHp: 100, speed: 60, dmg: 10, range: 24, arc: Math.PI * 0.9, cd: 0.55, t: 0, hurt: 0, face: 1, walk: 0, dir: 1, swing: null };
+  player = { x: 0, y: 0, r: 7, cr: 4, hp: 100, maxHp: 100, speed: 60, dmg: 10, range: 24, arc: Math.PI * 0.9, cd: 0.55, t: 0, hurt: 0, aim: Math.PI / 2, walk: 0, dir: 1, swing: null };
   nextFloor();
 }
 
@@ -78,51 +78,89 @@ function nextFloor() {
 
 function buildStatic() {
   const { cols, rows, grid, variant } = world;
+  const w = cols * TILE, h = rows * TILE;
   const c = document.createElement('canvas');
-  c.width = cols * TILE; c.height = rows * TILE;
+  c.width = w; c.height = h;
   const g = c.getContext('2d');
   g.imageSmoothingEnabled = false;
   const r = rng(world.seed);
-  const water = (x, y) => x >= 0 && y >= 0 && x < cols && y < rows && grid[y][x] === T.WATER;
+  const isWater = (x, y) => x >= 0 && y >= 0 && x < cols && y < rows && grid[y][x] === T.WATER;
 
-  for (let y = 0; y < rows; y++) {
-    for (let x = 0; x < cols; x++) {
-      const t = grid[y][x], v = variant[y][x];
-      g.drawImage(t === T.WATER ? SPR.water[v & 1] : SPR.grass[v], x * TILE, y * TILE);
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) g.drawImage(SPR.grass[variant[y][x]], x * TILE, y * TILE);
+
+  // Per-pixel pass: smooth value noise thresholded into crisp patches of darker and
+  // lighter grass, and ponds painted in flat bands (foam, shallow, mid, deep).
+  const img = g.getImageData(0, 0, w, h), d = img.data;
+  const cell = 9, nx = Math.ceil(w / cell) + 2, ny = Math.ceil(h / cell) + 2;
+  const noise = Float32Array.from({ length: nx * ny }, () => r());
+  const smooth = a => a * a * (3 - 2 * a);
+  const n = (px, py) => {
+    const fx = px / cell, fy = py / cell, ix = Math.floor(fx), iy = Math.floor(fy);
+    const u = smooth(fx - ix), v = smooth(fy - iy);
+    const A = noise[iy * nx + ix], B = noise[iy * nx + ix + 1], C = noise[(iy + 1) * nx + ix], D = noise[(iy + 1) * nx + ix + 1];
+    return (A * (1 - u) + B * u) * (1 - v) + (C * (1 - u) + D * u) * v;
+  };
+  const WATER = [[0xd7, 0xed, 0xe6], [0x9f, 0xd0, 0xd0], [0x63, 0xb4, 0xb6], [0x3f, 0x9a, 0xa3]];
+  for (let py = 0; py < h; py++) {
+    for (let px = 0; px < w; px++) {
+      const i = (py * w + px) * 4;
+      const tx = (px / TILE) | 0, ty = (py / TILE) | 0;
+      const nn = n(px, py);
+      if (grid[ty][tx] !== T.WATER) {
+        if (nn > 0.62) { d[i] *= 0.9; d[i + 1] *= 0.93; d[i + 2] *= 0.88; }
+        else if (nn < 0.2) { d[i] = Math.min(255, d[i] + 9); d[i + 1] = Math.min(255, d[i + 1] + 12); d[i + 2] = Math.min(255, d[i + 2] + 5); }
+        continue;
+      }
+      // distance in pixels to the nearest land tile (looking one tile around)
+      let dist = 99;
+      for (let oy = -1; oy <= 1; oy++) {
+        for (let ox = -1; ox <= 1; ox++) {
+          if (isWater(tx + ox, ty + oy)) continue;
+          const rx0 = (tx + ox) * TILE, ry0 = (ty + oy) * TILE;
+          const ddx = Math.max(rx0 - px, 0, px - (rx0 + TILE - 1)), ddy = Math.max(ry0 - py, 0, py - (ry0 + TILE - 1));
+          dist = Math.min(dist, Math.hypot(ddx, ddy));
+        }
+      }
+      const t = dist + (nn - 0.5) * 10;
+      let col = t < 2 ? WATER[0] : t < 7 ? WATER[1] : t < 14 ? WATER[2] : WATER[3];
+      if (col !== WATER[0] && ((px * 7 + py * 13) % 61 === 0)) col = WATER[0];
+      d[i] = col[0]; d[i + 1] = col[1]; d[i + 2] = col[2];
     }
   }
-  // big soft patches of lighter and darker grass break up the tiling
-  for (let i = 0; i < cols * rows / 10; i++) {
-    g.fillStyle = r() < 0.5 ? 'rgba(80,125,40,0.22)' : 'rgba(160,200,90,0.14)';
-    g.beginPath();
-    g.ellipse(r() * cols * TILE, r() * rows * TILE, 10 + r() * 22, 8 + r() * 14, 0, 0, Math.PI * 2);
-    g.fill();
-  }
-  // ponds: foam on the shore, dark bank on the grass side
+  g.putImageData(img, 0, 0);
+
+  // brown cliff ledges where grass drops into water (top and sides), like the reference
+  const ledge = (x0, y0, ww, hh, vertical) => {
+    g.fillStyle = '#b9c7a6'; g.fillRect(x0, y0, vertical ? 1 : ww, vertical ? hh : 1);
+    g.fillStyle = '#8a5a48'; g.fillRect(vertical ? x0 + 1 : x0, vertical ? y0 : y0 + 1, vertical ? 3 : ww, vertical ? hh : 4);
+    g.fillStyle = '#6a4034';
+    for (let k = 1; k < (vertical ? hh : ww); k += 3 + ((r() * 3) | 0)) {
+      if (vertical) g.fillRect(x0 + 1, y0 + k, 3, 1); else g.fillRect(x0 + k, y0 + 1, 1, 4);
+    }
+  };
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < cols; x++) {
       if (grid[y][x] !== T.WATER) continue;
-      const px = x * TILE, py = y * TILE;
-      if (grid[y][x] === T.WATER && !water(x, y - 1)) { g.fillStyle = '#d8f0e8'; g.fillRect(px, py, TILE, 2); g.fillStyle = '#4f7a2c'; g.fillRect(px, py - 1, TILE, 1); }
-      if (!water(x, y + 1)) { g.fillStyle = '#d8f0e8'; g.fillRect(px, py + TILE - 2, TILE, 2); g.fillStyle = '#4f7a2c'; g.fillRect(px, py + TILE, TILE, 1); }
-      if (!water(x - 1, y)) { g.fillStyle = '#d8f0e8'; g.fillRect(px, py, 2, TILE); g.fillStyle = '#4f7a2c'; g.fillRect(px - 1, py, 1, TILE); }
-      if (!water(x + 1, y)) { g.fillStyle = '#d8f0e8'; g.fillRect(px + TILE - 2, py, 2, TILE); g.fillStyle = '#4f7a2c'; g.fillRect(px + TILE, py, 1, TILE); }
+      if (!isWater(x, y - 1)) ledge(x * TILE, y * TILE, TILE, 5, false);
+      if (!isWater(x - 1, y)) ledge(x * TILE, y * TILE, 4, TILE, true);
+      if (!isWater(x + 1, y)) { g.save(); g.translate((x + 1) * TILE, y * TILE); g.scale(-1, 1); ledge(0, 0, 4, TILE, true); g.restore(); }
     }
   }
+
   // contact shadows under trees and rocks
-  g.fillStyle = 'rgba(30,60,20,0.35)';
+  g.fillStyle = 'rgba(30,50,30,0.35)';
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < cols; x++) {
       const t = grid[y][x];
-      if (t === T.TREE || t === T.ROCK) { g.beginPath(); g.ellipse(x * TILE + 8 + treeShift(y), y * TILE + 14, 8, 3, 0, 0, Math.PI * 2); g.fill(); }
+      if (t === T.TREE || t === T.ROCK) { g.beginPath(); g.ellipse(x * TILE + 8 + (t === T.TREE ? treeShift(y) : 0), y * TILE + 14, 8, 3, 0, 0, Math.PI * 2); g.fill(); }
     }
   }
   // trees and rocks row by row so lower ones overlap upper ones; odd rows are staggered
-  // like the dense forests in the reference
+  // so forests pack together like the reference
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < cols; x++) {
       const t = grid[y][x];
-      if (t === T.TREE) g.drawImage(SPR.tree[(x * 7 + y * 3) % 2], x * TILE + treeShift(y), y * TILE - 2);
+      if (t === T.TREE) g.drawImage(SPR.tree[(x * 31 + y * 17) % 23 === 0 ? 2 : (x * 7 + y * 3) % 2], x * TILE + treeShift(y), y * TILE - 4);
       else if (t === T.ROCK) g.drawImage(SPR.rock, x * TILE, y * TILE);
     }
   }
@@ -195,7 +233,7 @@ function nearestEnemy(maxDist) {
 function startSwing(target) {
   const a = Math.atan2(target.y - player.y, target.x - player.x);
   player.dir *= -1; // alternate swing direction for a combo feel
-  player.face = Math.cos(a) >= 0 ? 1 : -1;
+  player.aim = a;
   player.swing = { t: 0, dur: Math.min(0.2, player.cd * 0.5), a, dir: player.dir, hit: false };
 }
 
@@ -237,7 +275,7 @@ function update(dt) {
     const m = Math.min(len, STICK_R) / STICK_R;
     move(player, (stick.dx / len) * player.speed * m * dt, (stick.dy / len) * player.speed * m * dt);
     player.walk += dt * 10;
-    if (!player.swing && Math.abs(stick.dx) > 2) player.face = stick.dx > 0 ? 1 : -1;
+    if (!player.swing) player.aim = Math.atan2(stick.dy, stick.dx);
   } else player.walk = 0;
   player.hurt = Math.max(0, player.hurt - dt);
 
@@ -351,43 +389,59 @@ function shadow(x, y, rx) {
 }
 
 function drawSword(px, py, ang) {
-  const s = player.range / 24;
+  const k = player.range / 24;
   ctx.save();
   ctx.translate(px, py);
   ctx.rotate(ang + Math.PI / 2);
-  ctx.drawImage(SPR.sword, -3.5 * s, -17.5 * s, 7 * s, 21 * s);
+  ctx.drawImage(SPR.sword, -2.5 * k, -16.5 * k, 5 * k, 19 * k);
   ctx.restore();
+}
+
+// Which of the three drawn views to use for a facing angle (side is mirrored for left).
+function heroView(a) {
+  const c = Math.cos(a), sn = Math.sin(a);
+  if (Math.abs(c) > Math.abs(sn)) return { v: 'side', f: c >= 0 ? 1 : -1 };
+  return { v: sn >= 0 ? 'down' : 'up', f: c >= 0 ? 1 : -1 };
 }
 
 function drawHero() {
   const s = player.swing;
+  const { v, f } = heroView(s ? s.a : player.aim);
   const q = s ? s.t / s.dur : 0;
   const lunge = s ? Math.sin(Math.min(q, 1) * Math.PI) * 2.5 : 0;
   const hx = player.x + (s ? Math.cos(s.a) * lunge : 0);
   const hy = player.y + (s ? Math.sin(s.a) * lunge : 0);
   const bob = player.walk ? Math.abs(Math.sin(player.walk)) * 1.5 : 0;
   const frame = player.walk ? (Math.floor(player.walk / 2.2) % 2 ? 'walkA' : 'walkB') : 'idle';
+  const sway = Math.sin(time * 3) * 0.04;
 
-  // sword pose: resting over the back, or mid-swing
-  let ang, px, py;
+  // sword: carried on the back (or ready at the side), or mid-swing
+  let ang, px, py, behind;
   if (s) {
     const [a0, a1] = swingAngles(s);
     ang = a0 + (a1 - a0) * ease(Math.min(q, 1));
-    px = hx + Math.cos(s.a) * 3; py = hy + 1 + Math.sin(s.a) * 2;
-  } else {
-    ang = (player.face > 0 ? -2.1 : -1.04) + Math.sin(time * 3) * 0.04;
-    px = hx + player.face * 5; py = hy + 1 - bob;
-  }
-  const behind = s ? Math.sin(ang) < 0 : true;
+    px = hx + Math.cos(s.a) * 3; py = hy - 3 + Math.sin(s.a) * 2;
+    behind = Math.sin(ang) < 0;
+  } else if (v === 'down') { ang = -1.15 + sway; px = hx + 4; py = hy - 3 - bob; behind = true; }
+  else if (v === 'up') { ang = -1.95 + sway; px = hx - 2; py = hy - 4 - bob; behind = false; }
+  else { ang = (f > 0 ? -2.2 : -0.94) + sway; px = hx - f * 2; py = hy - 3 - bob; behind = true; }
+
+  // round shield on the off-hand arm (hidden behind the body in side view)
+  const sh = v === 'down' ? { x: hx + 7, y: hy - 1, front: true }
+    : v === 'up' ? { x: hx - 7, y: hy - 1, front: false }
+    : { x: hx - f * 5, y: hy - 1, front: false };
+  const drawShield = () => ctx.drawImage(SPR.shield, Math.round(sh.x - 4), Math.round(sh.y - 4 - bob));
 
   shadow(player.x, player.y + 6, 5);
+  if (!sh.front) drawShield();
   if (behind) drawSword(px, py, ang);
   ctx.save();
   if (player.hurt > 0 && Math.floor(time * 20) % 2) ctx.filter = 'brightness(3)';
-  ctx.translate(Math.round(hx), Math.round(hy - 9 - bob));
-  if (player.face < 0) ctx.scale(-1, 1);
-  ctx.drawImage(SPR.hero[frame], -8, 0);
+  ctx.translate(Math.round(hx), Math.round(hy - 13 - bob));
+  if (v === 'side' && f < 0) ctx.scale(-1, 1);
+  ctx.drawImage(SPR.hero[v][frame], -8, 0);
   ctx.restore();
+  if (sh.front) drawShield();
   if (!behind) drawSword(px, py, ang);
 
   if (s) {
@@ -600,6 +654,7 @@ window.__game = {
   get cam() { return [cam.x, cam.y]; },
   get player() { return [player.x, player.y]; },
   get enemyList() { return enemies.map(e => [e.x, e.y]); },
-  teleport(x, y) { player.x = x; player.y = y; },
+  teleport(x, y) { player.x = x; player.y = y; cam.x = clamp(x - W / 2, 0, world.cols * TILE - W); cam.y = clamp(y - H / 2, 0, world.rows * TILE - H); },
+  findTile(t) { for (let y = 0; y < world.rows; y++) for (let x = 0; x < world.cols; x++) if (world.grid[y][x] === t) return [x * TILE + 8, y * TILE + 8]; return null; },
   killAll() { enemies.forEach(e => { e.hp = 0; }); },
 };
