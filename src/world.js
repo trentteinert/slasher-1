@@ -41,14 +41,14 @@ export function distanceField(world, tx, ty) {
   return d;
 }
 
-export function genFloor(seed, cols, rows) {
+export function genFloor(seed, cols, rows, opts = {}) {
   for (let attempt = 0; ; attempt++) {
-    const w = tryGen(seed + attempt * 101, cols, rows);
+    const w = tryGen(seed + attempt * 101, cols, rows, opts.carve !== false);
     if (w.reach.length >= cols * rows * 0.25) return w;
   }
 }
 
-function tryGen(seed, cols, rows) {
+function tryGen(seed, cols, rows, carve) {
   const r = rng(seed);
   const grid = Array.from({ length: rows }, () => Array(cols).fill(T.GRASS));
   const spawn = { tx: cols >> 1, ty: rows - 4 };
@@ -89,6 +89,8 @@ function tryGen(seed, cols, rows) {
   scatter(T.FIRE, Math.round(k * (1 + r() * 2)));
   scatter(T.TORCH, Math.round(k * 2));
 
+  if (carve) widenPassages(grid, cols, rows);
+
   // anything the player can't reach becomes forest so nothing is sealed off
   const field = distanceField({ grid, cols, rows }, spawn.tx, spawn.ty);
   const reach = [];
@@ -102,4 +104,44 @@ function tryGen(seed, cols, rows) {
 
   const variant = Array.from({ length: rows }, () => Array.from({ length: cols }, () => Math.floor(r() * 4)));
   return { grid, cols, rows, spawn, reach, variant, seed };
+}
+
+const CARVABLE = new Set([T.TREE, T.ROCK, T.FIRE, T.TORCH]);
+
+// Every walkable tile should sit inside a 2x2 block of walkable tiles, so there are no one-tile
+// corridors, dead-end slits or pinch points. Where one exists, clear the few obstacles that
+// would make a 2x2 block (never lakes, and never the outer forest wall).
+export function widenPassages(grid, cols, rows) {
+  const walk = (x, y) => x >= 0 && y >= 0 && x < cols && y < rows && grid[y][x] === T.GRASS;
+  const carvable = (x, y) => x >= 2 && y >= 2 && x < cols - 2 && y < rows - 2 && CARVABLE.has(grid[y][x]);
+  const BLOCKS = [[0, 0], [-1, 0], [0, -1], [-1, -1]];
+  const blockTiles = (x, y, [dx, dy]) => [[x + dx, y + dy], [x + dx + 1, y + dy], [x + dx, y + dy + 1], [x + dx + 1, y + dy + 1]];
+  for (let pass = 0; pass < 8; pass++) {
+    let changed = false;
+    for (let y = 2; y < rows - 2; y++) {
+      for (let x = 2; x < cols - 2; x++) {
+        if (!walk(x, y)) continue;
+        let best = null;
+        for (const b of BLOCKS) {
+          const need = blockTiles(x, y, b).filter(([bx, by]) => !walk(bx, by));
+          if (need.length === 0) { best = []; break; }
+          if (need.every(([bx, by]) => carvable(bx, by)) && (!best || need.length < best.length)) best = need;
+        }
+        if (best && best.length) { for (const [bx, by] of best) grid[by][bx] = T.GRASS; changed = true; }
+      }
+    }
+    if (!changed) break;
+  }
+}
+
+// how many walkable tiles are NOT inside a 2x2 walkable block (a measure of tight spots)
+export function narrowCount(grid, cols, rows) {
+  const walk = (x, y) => x >= 0 && y >= 0 && x < cols && y < rows && grid[y][x] === T.GRASS;
+  let n = 0;
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+    if (!walk(x, y)) continue;
+    const ok = [[0, 0], [-1, 0], [0, -1], [-1, -1]].some(([dx, dy]) => walk(x + dx, y + dy) && walk(x + dx + 1, y + dy) && walk(x + dx, y + dy + 1) && walk(x + dx + 1, y + dy + 1));
+    if (!ok) n++;
+  }
+  return n;
 }

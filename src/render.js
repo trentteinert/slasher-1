@@ -208,30 +208,36 @@ export class Renderer {
     return { points, MAX };
   }
 
-  // Trees get a dithered see-through hole around the hero and nearby enemies, but only
-  // where the tree is closer to the camera than they are (so it's the blocking trees).
+  // Trees that stand clearly in front of the hero (or a nearby enemy) go partly see-through so
+  // you can see them, but never fully: they stay visible as ghosts so you know they're solid.
+  // A tree within ~1.3 tiles of the hero is never faded at all (that's the one you could walk into).
   makeTreeMaterial() {
     const m = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
     m.onBeforeCompile = sh => {
       sh.uniforms.uFocus = this.uFocus;
       sh.vertexShader = sh.vertexShader
-        .replace('void main() {', 'varying float vFadeDepth;\nvoid main() {')
-        .replace('#include <project_vertex>', '#include <project_vertex>\n\tvFadeDepth = -mvPosition.z;');
+        .replace('void main() {', 'varying float vInstZ;\nvoid main() {')
+        .replace('#include <project_vertex>', `#include <project_vertex>
+	#ifdef USE_INSTANCING
+	vInstZ = instanceMatrix[3].z;
+	#else
+	vInstZ = modelMatrix[3].z;
+	#endif`);
       sh.fragmentShader = sh.fragmentShader.replace('void main() {', `
 uniform vec4 uFocus[${MAX_FOCUS}];
-varying float vFadeDepth;
+varying float vInstZ;
 const float BAYER[16] = float[16](0.,8.,2.,10.,12.,4.,14.,6.,3.,11.,1.,9.,15.,7.,13.,5.);
 void main() {
 	float fade = 0.0;
 	for (int i = 0; i < ${MAX_FOCUS}; i++) {
 		vec4 f = uFocus[i];
-		if (f.w > 0.0 && vFadeDepth < f.z - 0.6) {
+		if (f.w > 0.0 && vInstZ > f.z + 1.3) {
 			float d = distance(gl_FragCoord.xy, f.xy);
-			fade = max(fade, 1.0 - smoothstep(f.w * 0.55, f.w, d));
+			fade = max(fade, 1.0 - smoothstep(f.w * 0.6, f.w, d));
 		}
 	}
 	ivec2 q = ivec2(mod(gl_FragCoord.xy, 4.0));
-	if (fade * 0.94 > (BAYER[q.x + q.y * 4] + 0.5) / 16.0) discard;`);
+	if (fade * 0.5 > (BAYER[q.x + q.y * 4] + 0.5) / 16.0) discard;`);
     };
     return m;
   }
@@ -630,14 +636,12 @@ void main() {
   focusPoint(i, x, z, h, radius) {
     const f = this.uFocus.value[i];
     this.tmp2.set(x, 0, z).addScaledVector(this.up, h);
-    this.tmp.copy(this.tmp2).applyMatrix4(this.camera.matrixWorldInverse);
-    const depth = -this.tmp.z;
     this.tmp.copy(this.tmp2).project(this.camera);
-    f.set((this.tmp.x * 0.5 + 0.5) * this.bufW, (this.tmp.y * 0.5 + 0.5) * this.bufH, depth, radius);
+    f.set((this.tmp.x * 0.5 + 0.5) * this.bufW, (this.tmp.y * 0.5 + 0.5) * this.bufH, z, radius);
   }
 
   updateFocus(player, enemies) {
-    this.focusPoint(0, player.x * U, player.y * U, 0.6, 30);
+    this.focusPoint(0, player.x * U, player.y * U, 0.6, 26);
     // the nearest few enemies, so you can see them behind trees too
     let n = 1;
     const near = [];
