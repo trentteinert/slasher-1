@@ -31,14 +31,28 @@ const ORBS = [
 ORBS.forEach(o => { o.sprite = orbSprite(o.colors); });
 
 const ENEMY_TYPES = {
-  chomper: { sprite: 'chomper', hp: 14, speed: 30, dmg: 8, size: 16, cr: 4, drop: 0.25 },
-  bulb: { sprite: 'bulb', hp: 8, speed: 44, dmg: 6, size: 16, cr: 4, drop: 0.2 },
-  brute: { sprite: 'brute', hp: 50, speed: 24, dmg: 16, size: 24, cr: 6, drop: 0.9 },
+  chomper: { sprite: 'chomper', hp: 14, speed: 30, dmg: 8, size: 16, cr: 4, drop: 0.25, ai: 'chase' },
+  bulb: { sprite: 'bulb', hp: 8, speed: 44, dmg: 6, size: 16, cr: 4, drop: 0.2, ai: 'chase' },
+  brute: { sprite: 'brute', hp: 50, speed: 24, dmg: 16, size: 24, cr: 6, drop: 0.9, ai: 'chase' },
+  // keeps its distance and spits slow purple spores
+  spitter: { sprite: 'spitter', hp: 12, speed: 26, dmg: 5, size: 16, cr: 4, drop: 0.35, ai: 'ranged' },
+  // flies over everything in erratic swarms
+  bat: { sprite: 'batA', frames: ['batA', 'batB'], hp: 5, speed: 62, dmg: 5, size: 16, cr: 3, drop: 0.1, ai: 'swarm', fly: true },
+  // winds up (flashes red), then dashes in a straight line
+  charger: { sprite: 'charger', hp: 30, speed: 28, dmg: 14, size: 16, cr: 5, drop: 0.5, ai: 'charger' },
 };
+// a boss every 5th floor, cycling through these (and getting tougher with the floor number)
+const BOSSES = [
+  { name: 'Great Chomper', sprite: 'bossChomper', ai: 'bossChomper', hp: 260, speed: 20, dmg: 18 },
+  { name: 'Stone Golem', sprite: 'bossGolem', ai: 'bossGolem', hp: 340, speed: 18, dmg: 22 },
+  { name: 'Venom Chomper', sprite: 'bossVenom', ai: 'bossChomper', hp: 300, speed: 24, dmg: 20 },
+  { name: 'Frost Golem', sprite: 'bossFrost', ai: 'bossGolem', hp: 380, speed: 21, dmg: 24 },
+].map(b => ({ ...b, size: 32, cr: 11, depth: 6, kb: 0.1, boss: true, aggro: 150, drop: 0 }));
 const AGGRO = 90;
 
 let seed, floor, world, field, fieldT;
 let player, enemies, particles, orbs, texts, portal, state, shake, time, banner, fade, msg;
+let shots = [], fx = [], bossRef = null;
 const cam = { x: 0, y: 0 };
 const stick = { active: false, id: null, ox: 0, oy: 0, dx: 0, dy: 0 };
 const STICK_R = 48; // CSS pixels
@@ -62,12 +76,13 @@ function nextFloor() {
   player.y = world.spawn.ty * TILE + TILE / 2;
   player.hp = Math.min(player.maxHp, player.hp + player.maxHp * 0.2);
   player.swing = null;
-  enemies = []; particles = []; orbs = []; texts = [];
+  enemies = []; particles = []; orbs = []; texts = []; shots = []; fx = []; bossRef = null;
   shake = 0; time = 0; msg = { text: '', t: 0 };
   populate();
   const far = [...world.reach].sort((a, b) => b.dist - a.dist).slice(0, 5);
   const p = far[Math.floor(Math.random() * far.length)];
   portal = { x: p.tx * TILE + 8, y: p.ty * TILE + 8, open: false };
+  if (floor % 5 === 0) placeBoss();
   banner = 1.6; fade = 1;
   field = distanceField(world, world.spawn.tx, world.spawn.ty);
   fieldT = 0.2;
@@ -92,39 +107,101 @@ function solidAt(x, y) {
 }
 const blocked = (x, y, r) => solidAt(x - r, y - r) || solidAt(x + r, y - r) || solidAt(x - r, y + r) || solidAt(x + r, y + r);
 function move(e, dx, dy) {
+  if (e.type && e.type.fly) { e.x = clamp(e.x + dx, 8, world.cols * TILE - 8); e.y = clamp(e.y + dy, 8, world.rows * TILE - 8); return; }
   if (!blocked(e.x + dx, e.y, e.cr)) e.x += dx;
   if (!blocked(e.x, e.y + dy, e.cr)) e.y += dy;
 }
 
 // ---- enemies ----
 function pickType() {
-  const r = Math.random();
-  if (floor >= 3 && r < 0.12) return 'brute';
-  if (floor >= 2 && r < 0.4) return 'bulb';
+  const pool = [['chomper', 3]];
+  if (floor >= 2) pool.push(['bulb', 1.6], ['spitter', 1.3]);
+  if (floor >= 3) pool.push(['bat', 1.2], ['brute', 0.7]);
+  if (floor >= 4) pool.push(['charger', 1]);
+  let r = Math.random() * pool.reduce((a, [, w]) => a + w, 0);
+  for (const [k, w] of pool) if ((r -= w) < 0) return k;
   return 'chomper';
 }
 
-function addEnemy(x, y) {
-  const type = ENEMY_TYPES[pickType()];
-  const hpMul = 1 + 0.25 * (floor - 1), dmgMul = 1 + 0.15 * (floor - 1), spdMul = 1 + 0.04 * (floor - 1);
+function makeEnemy(type, x, y) {
+  const hpMul = 1 + (type.boss ? 0.2 : 0.25) * (floor - 1), dmgMul = 1 + 0.15 * (floor - 1), spdMul = 1 + 0.04 * (floor - 1);
   const hp = type.hp * hpMul;
-  enemies.push({ type, x, y, cr: type.cr, hp, maxHp: hp, speed: type.speed * spdMul * rand(0.9, 1.1), dmg: type.dmg * dmgMul, flash: 0, kx: 0, ky: 0, phase: rand(0, 6), aggro: false });
+  const e = { type, x, y, cr: type.cr, hp, maxHp: hp, speed: type.speed * (type.boss ? 1 : spdMul) * rand(0.9, 1.1), dmg: type.dmg * dmgMul, flash: 0, tele: 0, kx: 0, ky: 0, phase: rand(0, 6), seed: rand(0, 6.28), aggro: false, state: 'walk', st: 0, cool: rand(0.6, 2), slamCd: 3, sumCd: 7, rockCd: 2, chargeCd: 5, dashA: 0 };
+  enemies.push(e);
+  return e;
 }
+const addEnemy = (x, y, key = pickType()) => makeEnemy(ENEMY_TYPES[key], x, y);
 
 // Enemies wait in packs scattered across the floor and wake up when you get close.
 function populate() {
-  const total = Math.min(60, 6 + 4 * floor);
+  const total = Math.round(Math.min(60, 6 + 4 * floor) * (floor % 5 === 0 ? 0.5 : 1)); // boss floors have fewer minions
   let far = world.reach.filter(t => t.dist >= 9);
   if (!far.length) far = world.reach;
   for (let guard = 0; enemies.length < total && guard < 500; guard++) {
     const c = far[Math.floor(Math.random() * far.length)];
-    const n = Math.min(total - enemies.length, 1 + Math.floor(Math.random() * 3));
+    const key = pickType();
+    const n = Math.min(total - enemies.length, key === 'bat' ? 4 : 1 + Math.floor(Math.random() * 3));
     for (let i = 0; i < n; i++) {
       const tx = c.tx + Math.floor(rand(-2, 3)), ty = c.ty + Math.floor(rand(-2, 3));
       if (tx < 1 || ty < 1 || tx >= world.cols - 1 || ty >= world.rows - 1 || isSolid(world.grid[ty][tx])) continue;
-      addEnemy(tx * TILE + 8 + rand(-3, 3), ty * TILE + 8 + rand(-3, 3));
+      addEnemy(tx * TILE + 8 + rand(-3, 3), ty * TILE + 8 + rand(-3, 3), key);
     }
   }
+}
+
+// the boss guards the portal
+function placeBoss() {
+  const def = BOSSES[(floor / 5 - 1) % BOSSES.length];
+  const px = Math.floor(portal.x / TILE), py = Math.floor(portal.y / TILE);
+  const spots = world.reach.filter(t => { const d = Math.abs(t.tx - px) + Math.abs(t.ty - py); return d >= 4 && d <= 8; });
+  const t = spots.length ? spots[Math.floor(Math.random() * spots.length)] : world.reach[world.reach.length - 1];
+  bossRef = makeEnemy(def, t.tx * TILE + 8, t.ty * TILE + 8);
+  msg = { text: `BOSS: ${def.name}`, t: 4 };
+}
+
+function hurtPlayer(dmg) {
+  if (player.hurt > 0) return;
+  player.hp -= dmg; player.hurt = 0.6; shake = Math.max(shake, 3);
+  burst(player.x, player.y, '#7dd3fc', 6);
+  if (player.hp <= 0) state = 'dead';
+}
+
+function fireShot(x, y, a, speed, r, dmg, color) {
+  shots.push({ x, y, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, r, dmg, life: 3.2, color });
+}
+
+function summon(boss, n) {
+  for (let i = 0; i < n; i++) {
+    for (let tries = 0; tries < 8; tries++) {
+      const a = rand(0, 6.28), d = rand(22, 40), x = boss.x + Math.cos(a) * d, y = boss.y + Math.sin(a) * d;
+      if (blocked(x, y, 4)) continue;
+      addEnemy(x, y, 'chomper').aggro = true;
+      burst(x, y, '#c5e87a', 8);
+      break;
+    }
+  }
+}
+
+// wind up (telegraph) -> dash in a straight line -> rest. Returns a velocity, or null while walking.
+function dashStep(e, dt, toP, o) {
+  if (e.state === 'wind') {
+    e.st -= dt; e.tele = clamp(1 - e.st / o.wind, 0, 1);
+    if (e.st > 0.18) e.dashA = toP; // keeps aiming until the last instant
+    if (e.st <= 0) { e.state = 'dash'; e.st = o.dash; }
+    return [0, 0];
+  }
+  if (e.state === 'dash') {
+    e.st -= dt;
+    const dx = Math.cos(e.dashA), dy = Math.sin(e.dashA);
+    if (solidAt(e.x + dx * 7, e.y + dy * 7) || e.st <= 0) { e.state = 'rest'; e.st = o.rest; if (e.type.boss) shake = Math.max(shake, 3); }
+    return [dx * o.speed, dy * o.speed];
+  }
+  if (e.state === 'rest') {
+    e.st -= dt;
+    if (e.st <= 0) { e.state = 'walk'; e.cool = o.cool; }
+    return [0, 0];
+  }
+  return null;
 }
 
 const rgb = c => [parseInt(c.slice(1, 3), 16) / 255, parseInt(c.slice(3, 5), 16) / 255, parseInt(c.slice(5, 7), 16) / 255];
@@ -163,7 +240,8 @@ function swingHit(s) {
     e.hp -= player.dmg;
     e.aggro = true;
     e.flash = 0.1;
-    e.kx = (dx / (d || 1)) * 90; e.ky = (dy / (d || 1)) * 90;
+    const kb = e.type.kb ?? 1;
+    e.kx = (dx / (d || 1)) * 90 * kb; e.ky = (dy / (d || 1)) * 90 * kb;
     burst(e.x, e.y, '#ffffff', 2);
     burst(e.x, e.y, '#ff6b6b', 3);
   }
@@ -212,37 +290,96 @@ function update(dt) {
 
   const cols = world.cols;
   for (const e of enemies) {
+    const t = e.type;
     const pd = Math.hypot(player.x - e.x, player.y - e.y);
-    if (!e.aggro && pd < AGGRO) {
+    if (!e.aggro && pd < (t.aggro || AGGRO)) {
       e.aggro = true;
       for (const o of enemies) if (!o.aggro && Math.hypot(o.x - e.x, o.y - e.y) < 40) o.aggro = true; // wake the pack
     }
     e.flash = Math.max(0, e.flash - dt);
     e.phase += dt * (e.aggro ? 8 : 2);
+    e.tele = 0;
     if (!e.aggro) continue;
 
-    const tx = Math.floor(e.x / TILE), ty = Math.floor(e.y / TILE);
-    let gx = player.x, gy = player.y;
-    const d = field[ty * cols + tx];
-    if (d > 1) {
-      let best = d, bx = tx, by = ty;
-      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const nx = tx + dx, ny = ty + dy;
-        if (nx < 0 || ny < 0 || nx >= cols || ny >= world.rows) continue;
-        const nd = field[ny * cols + nx];
-        if (nd >= 0 && nd < best) { best = nd; bx = nx; by = ny; }
+    // path toward the hero (flyers just go straight at them)
+    const toP = Math.atan2(player.y - e.y, player.x - e.x);
+    let ux = Math.cos(toP), uy = Math.sin(toP);
+    if (!t.fly) {
+      const tx = Math.floor(e.x / TILE), ty = Math.floor(e.y / TILE);
+      const d = field[ty * cols + tx];
+      if (d > 1) {
+        let best = d, bx = tx, by = ty;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = tx + dx, ny = ty + dy;
+          if (nx < 0 || ny < 0 || nx >= cols || ny >= world.rows) continue;
+          const nd = field[ny * cols + nx];
+          if (nd >= 0 && nd < best) { best = nd; bx = nx; by = ny; }
+        }
+        const gx = bx * TILE + TILE / 2 - e.x, gy = by * TILE + TILE / 2 - e.y, gl = Math.hypot(gx, gy) || 1;
+        ux = gx / gl; uy = gy / gl;
       }
-      gx = bx * TILE + TILE / 2; gy = by * TILE + TILE / 2;
     }
-    const dx = gx - e.x, dy = gy - e.y, dist = Math.hypot(dx, dy) || 1;
-    move(e, (dx / dist * e.speed + e.kx) * dt, (dy / dist * e.speed + e.ky) * dt);
+    let vx = ux * e.speed, vy = uy * e.speed;
+    let dmgMul = 1;
+
+    switch (t.ai) {
+      case 'swarm': { // weave side to side
+        const w = Math.sin(e.phase * 0.8 + e.seed);
+        vx += -uy * w * e.speed * 0.9; vy += ux * w * e.speed * 0.9;
+        break;
+      }
+      case 'ranged': { // back off when close, circle at mid range, spit from afar
+        const px = Math.cos(toP), py = Math.sin(toP);
+        if (pd < 70) { vx = -px * e.speed; vy = -py * e.speed; }
+        else if (pd < 110) { vx = -py * e.speed * 0.6 * (e.seed > 3 ? 1 : -1); vy = px * e.speed * 0.6 * (e.seed > 3 ? 1 : -1); }
+        e.cool -= dt;
+        if (pd < 150 && e.cool <= 0) { fireShot(e.x, e.y, toP, 78, 4, e.dmg, '#c07bff'); e.cool = 1.9; }
+        break;
+      }
+      case 'charger': {
+        const v = dashStep(e, dt, toP, { wind: 0.6, dash: 0.5, rest: 0.8, speed: 150, cool: rand(1.5, 3) });
+        if (v) { [vx, vy] = v; if (e.state === 'dash') dmgMul = 1.3; }
+        else { vx *= 0.7; vy *= 0.7; e.cool -= dt; if (e.cool <= 0 && pd < 110 && pd > 25) { e.state = 'wind'; e.st = 0.6; e.dashA = toP; } }
+        break;
+      }
+      case 'bossChomper': {
+        if (e.state === 'slam') {
+          vx = vy = 0; e.st -= dt; e.tele = clamp(1 - e.st / 0.9, 0, 1);
+          if (e.st <= 0) { // impact
+            if (pd < 56 + player.cr) hurtPlayer(e.dmg * 1.2);
+            fx.push({ kind: 'shock', x: e.x, y: e.y, r: 64, t: 0, dur: 0.35 });
+            shake = 6; e.state = 'walk'; e.slamCd = 4.5;
+          }
+        } else if (e.state === 'roar') {
+          vx = vy = 0; e.st -= dt; e.tele = 0.5;
+          if (e.st <= 0) e.state = 'walk';
+        } else {
+          e.slamCd -= dt; e.sumCd -= dt;
+          if (e.slamCd <= 0 && pd < 90) { e.state = 'slam'; e.st = 0.9; fx.push({ kind: 'slam', x: e.x, y: e.y, r: 56, t: 0, dur: 0.9, owner: e }); }
+          else if (e.sumCd <= 0 && enemies.length < 26) { summon(e, 3); e.sumCd = 9; e.state = 'roar'; e.st = 0.6; }
+        }
+        break;
+      }
+      case 'bossGolem': {
+        const v = dashStep(e, dt, toP, { wind: 0.9, dash: 0.8, rest: 1.2, speed: 135, cool: 0 });
+        if (v) { [vx, vy] = v; if (e.state === 'dash') dmgMul = 1.4; if (e.state === 'rest' && e.st > 1.15) e.chargeCd = 7; }
+        else {
+          e.rockCd -= dt; e.chargeCd -= dt;
+          if (e.chargeCd <= 0 && pd < 170) { e.state = 'wind'; e.st = 0.9; e.dashA = toP; }
+          else if (e.rockCd <= 0 && pd < 190) {
+            for (let k = -1; k <= 1; k++) fireShot(e.x, e.y, toP + k * 0.28, 85, 5, e.dmg * 0.55, '#aab0c8');
+            e.rockCd = 3.2;
+          }
+        }
+        break;
+      }
+    }
+
+    move(e, (vx + e.kx) * dt, (vy + e.ky) * dt);
     e.kx *= 0.85; e.ky *= 0.85;
 
-    if (pd < e.cr + player.cr + 2 && player.hurt <= 0) {
-      player.hp -= e.dmg; player.hurt = 0.6; shake = 3;
-      burst(player.x, player.y, '#7dd3fc', 6);
-      if (player.hp <= 0) { state = 'dead'; return; }
-    }
+    if (pd < e.cr + player.cr + 2) hurtPlayer(e.dmg * dmgMul);
+    if (state === 'dead') return;
   }
   // soft separation so enemies don't stack
   for (let i = 0; i < enemies.length; i++) {
@@ -257,10 +394,25 @@ function update(dt) {
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     if (e.hp > 0) continue;
-    burst(e.x, e.y, '#fbbf24', 8);
-    if (Math.random() < e.type.drop) dropOrb(e.x, e.y);
+    burst(e.x, e.y, '#fbbf24', e.type.boss ? 30 : 8, e.type.boss ? 14 : 6);
+    if (e.type.boss) {
+      for (let k = 0; k < 3; k++) dropOrb(e.x + rand(-12, 12), e.y + rand(-12, 12));
+      shake = 7; msg = { text: `${e.type.name} defeated!`, t: 3 };
+      bossRef = null;
+    } else if (Math.random() < e.type.drop) dropOrb(e.x, e.y);
     enemies.splice(i, 1);
   }
+
+  // projectiles and ground effects
+  for (let i = shots.length - 1; i >= 0; i--) {
+    const sh = shots[i];
+    sh.x += sh.vx * dt; sh.y += sh.vy * dt; sh.life -= dt;
+    let dead = sh.life <= 0 || solidAt(sh.x, sh.y);
+    if (!dead && Math.hypot(player.x - sh.x, player.y - sh.y) < sh.r + player.cr + 1 && player.hurt <= 0) { hurtPlayer(sh.dmg); dead = true; }
+    if (dead) { burst(sh.x, sh.y, sh.color, 4, 10); shots.splice(i, 1); }
+  }
+  for (const f of fx) f.t += dt;
+  fx = fx.filter(f => f.t < f.dur && !(f.owner && f.owner.hp <= 0));
 
   for (let i = orbs.length - 1; i >= 0; i--) {
     const o = orbs[i];
@@ -361,6 +513,13 @@ function drawHud() {
   label('Floor ' + floor, VW - 12, top + 14 * u, 15 * u, '#fff', 'right');
   label(portal.open ? 'Portal open' : 'Foes ' + enemies.length, 12, top + 38 * u, 13 * u, '#fff', 'left');
 
+  if (bossRef) {
+    const bw = Math.min(VW * 0.8, 320), bx = (VW - bw) / 2, by = top + 62 * u;
+    label(bossRef.type.name, VW / 2, by - 6 * u, 13 * u, '#ffd84a');
+    hctx.fillStyle = '#12101a'; hctx.fillRect(bx - 2, by, bw + 4, 14 * u);
+    hctx.fillStyle = '#4a1a24'; hctx.fillRect(bx, by + 2, bw, 10 * u);
+    hctx.fillStyle = '#e5484d'; hctx.fillRect(bx, by + 2, Math.max(0, bw * bossRef.hp / bossRef.maxHp), 10 * u);
+  }
   if (msg.t > 0) { hctx.globalAlpha = Math.min(1, msg.t); label(msg.text, VW / 2, VH * 0.2, 15 * u); hctx.globalAlpha = 1; }
   if (banner > 0) { hctx.globalAlpha = Math.min(1, banner); label('FLOOR ' + floor, VW / 2, VH * 0.3, 34 * u); hctx.globalAlpha = 1; }
   if (fade > 0) { hctx.fillStyle = `rgba(0,0,0,${fade})`; hctx.fillRect(0, 0, VW, VH); }
@@ -373,7 +532,7 @@ function drawHud() {
 }
 
 function draw() {
-  renderer.render({ time, cam, player, enemies, orbs, portal, particles, shake });
+  renderer.render({ time, cam, player, enemies, orbs, portal, particles, shots, fx, shake });
   drawHud();
 }
 
@@ -407,8 +566,10 @@ addEventListener('keyup', e => { keys[e.key] = false; kb(); });
 
 let last = performance.now();
 function frame(now) {
-  const dt = clamp((now - last) / 1000, 0, 0.05);
+  const raw = now - last;
+  const dt = clamp(raw / 1000, 0, 0.05);
   last = now;
+  if (raw > 0) renderer.adapt(raw);
   update(dt);
   draw();
   requestAnimationFrame(frame);
@@ -419,6 +580,7 @@ requestAnimationFrame(frame);
 
 // hooks for automated tests
 window.__game = {
+  get stats() { const i = renderer.gl.info; return { calls: i.render.calls, tris: i.render.triangles, geos: i.memory.geometries, tex: i.memory.textures }; },
   get state() { return state; },
   get floor() { return floor; },
   get enemies() { return enemies.length; },
@@ -431,5 +593,12 @@ window.__game = {
   get enemyList() { return enemies.map(e => [e.x, e.y]); },
   teleport(x, y) { player.x = x; player.y = y; const f = camTarget(); cam.x = f.x; cam.y = f.y; },
   findTile(t) { for (let y = 0; y < world.rows; y++) for (let x = 0; x < world.cols; x++) if (world.grid[y][x] === t) return [x * TILE + 8, y * TILE + 8]; return null; },
+  get quality() { return renderer.quality; },
+  setQuality(q) { renderer.setQuality(q); },
+  gotoFloor(n) { floor = n - 1; nextFloor(); },
+  spawn(key, dx = 40, dy = -30) { const e = addEnemy(player.x + dx, player.y + dy, key); e.aggro = true; return e.hp; },
+  get boss() { return bossRef ? { hp: bossRef.hp, max: bossRef.maxHp, state: bossRef.state, x: bossRef.x, y: bossRef.y } : null; },
+  get shots() { return shots.length; },
+  hurtMe(d) { player.hp -= d; },
   killAll() { enemies.forEach(e => { e.hp = 0; }); },
 };

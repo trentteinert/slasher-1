@@ -11,6 +11,8 @@ const PAL = {
   W: '#ffffff', c: '#5cd6e6',
   u: '#8a4fd0', U: '#53268f',
   m: '#d63fd6', M: '#8a2a99',
+  C: '#f4e3b8', D: '#cfb98a', // cream
+  p: '#3a1030', Q: '#b8621a',
 };
 
 export function makeSprite(rows, pal = PAL, w = 16, h = 16) {
@@ -292,6 +294,131 @@ function ground(base, dark, light, seed) {
   return c;
 }
 
+
+// ---- new monsters ----
+const SPITTER = pad([
+  R(5, 'kkkkkk'),
+  R(3, 'kkuuuuuukk'),
+  R(2, 'kuuWWuuuuWWk'),
+  R(1, 'kuuWWuuuuuWWuk'),
+  R(1, 'kuuuuuuuuuuuuk'),
+  R(2, 'kUUUUUUUUUUk'),
+  R(4, 'kkUUUUkk'),
+  R(5, 'kCCCCk'),
+  R(5, 'kCkkCk'),
+  R(5, 'kCkkCk'),
+  R(5, 'kDCCDk'),
+  R(4, 'kDDCCDDk'),
+  R(4, 'kkkkkkkk'),
+], 1);
+
+const BAT_A = pad([
+  R(1, 'kk..........kk'),
+  R(1, 'kuk........kuk'),
+  R(1, 'kuuk..kk..kuuk'),
+  R(2, 'kuuukUUkuuuk'),
+  R(2, 'kuuUrUUrUuuk'),
+  R(3, 'kuUUUUUUuk'),
+  R(4, 'kkUUUUkk'),
+  R(5, 'kWkkWk'),
+  R(6, 'kkkk'),
+], 3);
+const BAT_B = pad([
+  R(4, 'kk....kk'),
+  R(4, 'kuk..kuk'),
+  R(1, 'kkuukkkkkkuukk'),
+  R(1, 'kuuuukUUkuuuuk'),
+  R(1, 'kuuukUrrUkuuuk'),
+  R(1, 'kkuuukUUkuuukk'),
+  R(2, 'kk.kUUUUk.kk'),
+  R(2, 'k...kWWk...k'),
+], 3);
+
+const CHARGER = pad([
+  R(4, 'kkkkkkkk'),
+  R(3, 'knnnnnnnnk'),
+  R(2, 'knnNnnnnNnnk'),
+  R(1, 'knnnnnnnnnnnnk'),
+  R(1, 'knnrknnnnkrnnk'),
+  R(1, 'knnnnnnnnnnnnk'),
+  R(2, 'knNNNNNNNNNk'),
+  R(2, 'knNkNNNNkNNk'),
+  R(1, 'kWWkNNNNNNkWWk'),
+  R(1, 'kWk........kWk'),
+  R(3, 'knk....knk'),
+  R(3, 'kkk....kkk'),
+], 2);
+
+// ---- bosses: drawn procedurally at 32x32 ----
+const px = (g, x, y, c) => { g.fillStyle = c; g.fillRect(x, y, 1, 1); };
+function disc(g, cx, cy, rx, ry, c, mask) {
+  for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++) {
+    for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++) {
+      if (((x + 0.5 - cx) / rx) ** 2 + ((y + 0.5 - cy) / ry) ** 2 <= 1 && (!mask || mask(x, y))) px(g, x, y, c);
+    }
+  }
+}
+function outline(c, color) {
+  const w = c.width, h = c.height, g = c.getContext('2d'), d = g.getImageData(0, 0, w, h).data;
+  const on = (x, y) => x >= 0 && y >= 0 && x < w && y < h && d[(y * w + x) * 4 + 3] > 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (!on(x, y) && (on(x - 1, y) || on(x + 1, y) || on(x, y - 1) || on(x, y + 1))) px(g, x, y, color);
+  }
+}
+const BOSS_CHOMPER_PAL = { body: '#f08a24', dark: '#c0621a', light: '#ffb454', leaf: '#4a9d4f', leafD: '#2f6b3a', mouth: '#3a1030', tongue: '#d9363e', eye: '#ffd84a', line: '#2a1f33' };
+const BOSS_VENOM_PAL = { body: '#8a4fd0', dark: '#5f2fa0', light: '#b98af0', leaf: '#3fb59a', leafD: '#1f7a68', mouth: '#1a0c28', tongue: '#e0457b', eye: '#9dff5c', line: '#1c1226' };
+function bossChomper(P) {
+  const c = document.createElement('canvas'); c.width = c.height = 32;
+  const g = c.getContext('2d');
+  // leafy collar and vines at the base
+  disc(g, 16, 27, 13, 4, P.leafD);
+  disc(g, 16, 26, 12, 3, P.leaf);
+  for (const x of [4, 9, 22, 27]) { disc(g, x, 28, 3, 2, P.leaf); px(g, x, 27, P.leafD); }
+  // head
+  disc(g, 16, 13, 12, 12, P.body);
+  disc(g, 16, 13, 12, 12, P.dark, (x, y) => ((x + 0.5 - 14) ** 2 + (y + 0.5 - 11) ** 2) > 12.5 ** 2);
+  disc(g, 11, 6, 4, 2, P.light);
+  // mouth
+  disc(g, 16, 15, 9, 7.5, P.mouth);
+  disc(g, 16, 19.5, 5.5, 2.8, P.tongue);
+  for (let i = 0; i < 5; i++) {
+    const tx = 10 + i * 3;
+    for (let dy = 0; dy < 4; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (Math.abs(dx) <= (3 - dy) / 2) { px(g, tx + dx, 8 + dy, '#ffffff'); px(g, tx + dx, 22 - dy, '#ffffff'); }
+    }
+  }
+  // eyes
+  for (const ex of [9, 21]) { g.fillStyle = P.eye; g.fillRect(ex, 4, 3, 2); px(g, ex + 1, 5, P.line); }
+  outline(c, P.line);
+  return c;
+}
+
+const BOSS_GOLEM_PAL = { base: '#8d8f98', light: '#c5c7cf', dark: '#5b5f6e', moss: '#4a9d4f', mossD: '#2f6b3a', eye: '#ffd84a', glow: '#f08a24', line: '#2a1f33' };
+const BOSS_FROST_PAL = { base: '#7fa3c9', light: '#cfe6ff', dark: '#44688f', moss: '#9fe3f0', mossD: '#5ab4cf', eye: '#c8fbff', glow: '#4d8dff', line: '#1c2540' };
+function bossGolem(P) {
+  const c = document.createElement('canvas'); c.width = c.height = 32;
+  const g = c.getContext('2d');
+  const block = (x, y, w, h) => {
+    g.fillStyle = P.base; g.fillRect(x, y, w, h);
+    g.fillStyle = P.light; g.fillRect(x, y, w, 1); g.fillRect(x, y, 1, h);
+    g.fillStyle = P.dark; g.fillRect(x, y + h - 1, w, 1); g.fillRect(x + w - 1, y, 1, h);
+  };
+  block(8, 24, 6, 7); block(18, 24, 6, 7);          // legs
+  block(7, 12, 18, 13);                             // torso
+  block(2, 10, 8, 8); block(22, 10, 8, 8);          // shoulders
+  block(2, 18, 5, 8); block(25, 18, 5, 8);          // arms
+  block(1, 25, 7, 6); block(24, 25, 7, 6);          // fists
+  block(11, 2, 10, 9);                              // head
+  g.fillStyle = P.line; g.fillRect(12, 4, 8, 1);    // brow
+  for (const ex of [13, 17]) { g.fillStyle = P.eye; g.fillRect(ex, 5, 2, 2); px(g, ex, 7, P.glow); px(g, ex + 1, 7, P.glow); }
+  g.fillStyle = P.dark; g.fillRect(13, 9, 6, 1);    // mouth slit
+  g.fillStyle = P.glow; g.fillRect(15, 15, 2, 6); g.fillRect(13, 17, 6, 2); // chest rune
+  for (const [x, y, w] of [[3, 10, 4], [22, 11, 3], [8, 13, 3], [20, 22, 4], [9, 24, 3], [12, 2, 3]]) { g.fillStyle = P.moss; g.fillRect(x, y, w, 1); g.fillStyle = P.mossD; g.fillRect(x, y + 1, w - 1, 1); }
+  g.fillStyle = P.dark; for (const [x, y] of [[10, 18], [11, 19], [21, 14], [22, 15], [4, 21], [27, 22]]) px(g, x, y, P.dark);
+  outline(c, P.line);
+  return c;
+}
+
 export function buildSprites() {
   const recolor = (rows, map) => makeSprite(rows, { ...PAL, ...map });
   const hero = {};
@@ -305,6 +432,14 @@ export function buildSprites() {
   return {
     hero,
     shield: makeSprite(SHIELD, SHIELD_PAL, 8, 8),
+    spitter: makeSprite(SPITTER),
+    batA: makeSprite(BAT_A),
+    batB: makeSprite(BAT_B),
+    charger: makeSprite(CHARGER),
+    bossChomper: bossChomper(BOSS_CHOMPER_PAL),
+    bossVenom: bossChomper(BOSS_VENOM_PAL),
+    bossGolem: bossGolem(BOSS_GOLEM_PAL),
+    bossFrost: bossGolem(BOSS_FROST_PAL),
     sword: makeSprite(SWORD, SWORD_PAL, 5, 19),
     chomper: makeSprite(CHOMPER),
     bulb: makeSprite(BULB),
